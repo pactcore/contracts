@@ -1,0 +1,10 @@
+{
+  "name": "pact-contracts",
+  "version": "0.1.0",
+  "description": "PACT Network smart contracts (Base chain / Solidity)",
+  "private": true,
+  "scripts": {
+    "build": "forge build",
+    "test": "forge test"
+  }
+}
