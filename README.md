@@ -1,6 +1,20 @@
 # Pact Contracts
 
-PACT now uses an ERC-8183-aligned commerce kernel instead of the older proprietary escrow/router pair. The core primitive is a `Job` with escrowed payment, provider submission, evaluator attestation, optional hooks, and expiry-based refunds.
+PACT Contracts is the Solidity/Foundry contract suite for the PACT network.
+
+The repository now centers its commerce layer on an ERC-8183-aligned `Job` primitive instead of the older proprietary escrow/router pair. The core flow covers escrowed payment, provider submission, evaluator attestation, optional hooks, and expiry-based refunds.
+
+## Repository Status
+
+This repository is intended to be public, auditable, and contributor-friendly:
+- contract dependencies are managed with Soldeer
+- CI runs formatting, build, and test checks on every PR
+- the commerce layer exposes ERC-8183-style lifecycle, hook, and evaluator surfaces
+- deterministic and governance-driven evaluator paths are both covered by tests
+
+## License
+
+This repository is released under the MIT license. See `LICENSE`.
 
 ## Build and Test
 
@@ -8,8 +22,9 @@ Dependencies are pinned in `foundry.toml` and `soldeer.lock` and are installed i
 
 ```bash
 forge soldeer install
+forge fmt
 forge build
-forge test
+forge test -vvv
 ```
 
 ## ERC-8183 Commerce
@@ -61,15 +76,15 @@ Files:
 Purpose:
 - `IACPHook` follows the ERC-8183 hook interface with `beforeAction` and `afterAction`.
 - `BaseCommerceHook` restricts callbacks to the commerce contract.
-- `ReputationGateHook` is a concrete PACT policy hook that enforces a minimum provider score on assignment/funding, emits `ProviderScoreVerified`, and records callback + score-check activity for auditing.
+- `ReputationGateHook` is a concrete PACT policy hook that enforces a minimum provider score on assignment/funding, emits `ProviderScoreVerified`, and records callback and score-check activity for auditing.
 
 PACT-specific direction carried through hooks:
-- Reputation gating and allowlists
-- Privacy-preserving job policies via opaque `optParams`
-- Underwriting and risk checks before funding
-- Capital-transfer or fund-management side effects in `afterAction`
-- Bidding or assignment verification in `setProvider`
-- Custom settlement or reputation updates on terminal transitions
+- reputation gating and allowlists
+- privacy-preserving job policies via opaque `optParams`
+- underwriting and risk checks before funding
+- capital-transfer or fund-management side effects in `afterAction`
+- bidding or assignment verification in `setProvider`
+- custom settlement or reputation updates on terminal transitions
 
 ### Deterministic / ZK-style Evaluator
 File: `src/evaluators/DeterministicReceiptEvaluator.sol`
@@ -91,7 +106,7 @@ Files:
 Purpose:
 - Turns DAO review into a concrete ERC-8183 evaluator path.
 - Lets tokenholders create `createCommerceDecisionProposal(...)` proposals that target a governance-owned evaluator contract.
-- After the proposal clears voting + timelock, governance executes the evaluator call, which then completes or rejects the job from the evaluator address.
+- After the proposal clears voting and timelock, governance executes the evaluator call, which then completes or rejects the job from the evaluator address.
 - Preserves opaque evaluator `optParams` all the way through to `PactCommerce` hooks, so governance decisions can carry proposal URIs, evidence bundles, or offchain deliberation metadata.
 
 This gives PACT a tested human/DAO review flow without changing the underlying ERC-8183 job permissions: `PactCommerce` still only accepts settlement from the configured evaluator address.
@@ -119,3 +134,11 @@ The rest of the repository remains unchanged:
 - deterministic evaluator completion and rejection paths, including forwarded opaque evaluation params
 
 `test/PactGovernance.t.sol` also covers governance-authored ERC-8183 decision proposals and verifies the encoded call target/data for the governance evaluator path.
+
+## Security
+
+See `SECURITY.md` for vulnerability reporting guidance.
+
+## Contributing
+
+See `CONTRIBUTING.md` for development workflow and PR expectations.

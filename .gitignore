@@ -16,3 +16,6 @@ docs/
 
 # Soldeer
 /dependencies
+
+# Legacy dependency managers
+/lib
