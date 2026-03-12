@@ -17,7 +17,9 @@ contract PactRewards is Ownable, ReentrancyGuard {
     uint256 public totalPendingRewards;
 
     event RewardAccrued(uint256 indexed epochId, address indexed participant, uint256 amount, bool isValidator);
-    event EpochRewardsDistributed(uint256 indexed epochId, uint256 validatorCount, uint256 workerCount, uint256 totalAmount);
+    event EpochRewardsDistributed(
+        uint256 indexed epochId, uint256 validatorCount, uint256 workerCount, uint256 totalAmount
+    );
     event RewardsClaimed(address indexed participant, uint256 amount);
 
     error ZeroAddress();
@@ -39,7 +41,9 @@ contract PactRewards is Ownable, ReentrancyGuard {
         uint256[] calldata workerRewards
     ) external onlyOwner nonReentrant {
         if (epochDistributed[epochId]) revert EpochAlreadyDistributed();
-        if (validators.length != validatorRewards.length || workers.length != workerRewards.length) revert LengthMismatch();
+        if (validators.length != validatorRewards.length || workers.length != workerRewards.length) {
+            revert LengthMismatch();
+        }
 
         uint256 validatorsTotal = _accrue(epochId, validators, validatorRewards, true);
         uint256 workersTotal = _accrue(epochId, workers, workerRewards, false);

@@ -62,8 +62,14 @@ contract PactIdentitySBT is ERC721, AccessControl {
         emit LevelUpgraded(tokenId, oldLevel, newLevel);
     }
 
-    function getIdentity(uint256 tokenId) external view returns (string memory role, uint8 level, uint256 registeredAt) {
-        if (_ownerOf(tokenId) == address(0)) revert TokenDoesNotExist();
+    function getIdentity(uint256 tokenId)
+        external
+        view
+        returns (string memory role, uint8 level, uint256 registeredAt)
+    {
+        if (_ownerOf(tokenId) == address(0)) {
+            revert TokenDoesNotExist();
+        }
         Identity storage identity = identities[tokenId];
         return (identity.role, identity.level, identity.registeredAt);
     }

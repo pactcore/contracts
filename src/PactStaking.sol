@@ -27,11 +27,7 @@ contract PactStaking is Ownable, ReentrancyGuard {
 
     event StakePosted(uint256 indexed challengeId, address indexed challenger, uint256 amount);
     event StakeResolved(
-        uint256 indexed challengeId,
-        bool upheld,
-        uint256 refundAmount,
-        uint256 juryAmount,
-        uint256 protocolAmount
+        uint256 indexed challengeId, bool upheld, uint256 refundAmount, uint256 juryAmount, uint256 protocolAmount
     );
 
     error ZeroAddress();

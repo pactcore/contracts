@@ -45,12 +45,8 @@ contract PactEscrowTest is Test {
         vm.prank(payer);
         escrow.createEscrow(TASK_ID, payer, ESCROW_AMOUNT);
 
-        PactEscrow.Payouts memory payouts = PactEscrow.Payouts({
-            worker: worker,
-            validators: validators,
-            treasury: treasury,
-            issuer: issuer
-        });
+        PactEscrow.Payouts memory payouts =
+            PactEscrow.Payouts({worker: worker, validators: validators, treasury: treasury, issuer: issuer});
 
         escrow.releaseEscrow(TASK_ID, payouts);
 
