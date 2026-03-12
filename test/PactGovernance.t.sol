@@ -2,6 +2,8 @@
 pragma solidity ^0.8.24;
 
 import {Test} from "forge-std/Test.sol";
+import {GovernanceReviewEvaluator} from "../src/evaluators/GovernanceReviewEvaluator.sol";
+import {PactCommerce} from "../src/PactCommerce.sol";
 import {PactGovernance} from "../src/PactGovernance.sol";
 import {MockUSDC} from "./mocks/MockUSDC.sol";
 
@@ -15,12 +17,16 @@ contract GovernanceTarget {
 
 contract PactGovernanceTest is Test {
     MockUSDC private governanceToken;
+    MockUSDC private paymentToken;
     PactGovernance private governance;
+    PactCommerce private commerce;
+    GovernanceReviewEvaluator private evaluator;
     GovernanceTarget private target;
 
     address private alice = makeAddr("alice");
     address private bob = makeAddr("bob");
     address private carol = makeAddr("carol");
+    address private treasury = makeAddr("treasury");
 
     uint64 private constant VOTING_DELAY = 1;
     uint64 private constant VOTING_PERIOD = 3 days;
@@ -37,6 +43,9 @@ contract PactGovernanceTest is Test {
         governance = new PactGovernance(
             address(governanceToken), VOTING_DELAY, VOTING_PERIOD, TIMELOCK_DELAY, PROPOSAL_THRESHOLD, QUORUM
         );
+        paymentToken = new MockUSDC();
+        commerce = new PactCommerce(address(paymentToken), treasury, 0);
+        evaluator = new GovernanceReviewEvaluator(address(commerce), address(governance));
         target = new GovernanceTarget();
 
         governanceToken.mint(alice, ALICE_VOTES);
@@ -124,6 +133,25 @@ contract PactGovernanceTest is Test {
         vm.prank(carol);
         vm.expectRevert(PactGovernance.ThresholdNotMet.selector);
         governance.createProposal(address(target), 0, data, "too little voting power");
+    }
+
+    function testCreateCommerceDecisionProposalTargetsGovernanceEvaluator() external {
+        bytes32 attestation = keccak256("dao:attestation");
+        bytes memory optParams = abi.encode("vote://review", uint256(3));
+
+        vm.prank(alice);
+        uint256 proposalId = governance.createCommerceDecisionProposal(
+            address(evaluator), 21, true, attestation, optParams, "dao completes job"
+        );
+
+        PactGovernance.Proposal memory proposal = governance.getProposal(proposalId);
+        bytes memory expectedData = abi.encodeWithSelector(
+            GovernanceReviewEvaluator.executeDecision.selector, 21, true, attestation, optParams
+        );
+
+        assertEq(proposal.target, address(evaluator));
+        assertEq(proposal.value, 0);
+        assertEq(keccak256(proposal.data), keccak256(expectedData));
     }
 
     function _createSetValueProposal(uint256 newValue) internal returns (uint256 proposalId) {
