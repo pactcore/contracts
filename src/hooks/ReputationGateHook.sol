@@ -12,12 +12,19 @@ contract ReputationGateHook is BaseCommerceHook, Ownable {
 
     uint256 public immutable minimumProviderScore;
 
+    event ProviderScoreVerified(
+        uint256 indexed jobId, bytes4 indexed selector, address indexed provider, uint256 score, uint256 minimumScore
+    );
+
     bytes4 public lastBeforeSelector;
     bytes4 public lastAfterSelector;
     bytes32 public lastBeforeDataHash;
     bytes32 public lastAfterDataHash;
     uint256 public lastBeforeJobId;
     uint256 public lastAfterJobId;
+    address public lastCheckedProvider;
+    uint256 public lastCheckedScore;
+    uint256 public lastRequiredScore;
 
     mapping(address provider => uint256 score) public providerScores;
 
@@ -38,13 +45,13 @@ contract ReputationGateHook is BaseCommerceHook, Ownable {
 
         if (selector == SET_PROVIDER_SELECTOR) {
             (address provider,) = abi.decode(data, (address, bytes));
-            _checkProvider(provider);
+            _checkProvider(jobId, selector, provider);
             return;
         }
 
         if (selector == FUND_SELECTOR) {
             IPactCommerce.Job memory job = IPactCommerce(commerce).getJob(jobId);
-            _checkProvider(job.provider);
+            _checkProvider(jobId, selector, job.provider);
         }
     }
 
@@ -54,8 +61,14 @@ contract ReputationGateHook is BaseCommerceHook, Ownable {
         lastAfterJobId = jobId;
     }
 
-    function _checkProvider(address provider) internal view {
+    function _checkProvider(uint256 jobId, bytes4 selector, address provider) internal {
         uint256 score = providerScores[provider];
+        lastCheckedProvider = provider;
+        lastCheckedScore = score;
+        lastRequiredScore = minimumProviderScore;
+
+        emit ProviderScoreVerified(jobId, selector, provider, score, minimumProviderScore);
+
         if (score < minimumProviderScore) {
             revert ProviderScoreTooLow(provider, score, minimumProviderScore);
         }

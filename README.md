@@ -24,6 +24,7 @@ Purpose:
 - Stores onchain job records: description, deliverable reference, evaluator attestation, and terminal status.
 - Exposes the standard hook surface around `setProvider`, `setBudget`, `fund`, `submit`, `complete`, and `reject`.
 - Bounds external hook execution with `HOOK_GAS_LIMIT` so policy hooks cannot consume unbounded gas.
+- Exposes `previewPayout(jobId)` so clients and frontends can quote provider/treasury settlement before completion.
 
 Roles:
 - `client`: creates the job, can set provider, negotiate budget, fund escrow, and reject while still `Open`.
@@ -60,7 +61,7 @@ Files:
 Purpose:
 - `IACPHook` follows the ERC-8183 hook interface with `beforeAction` and `afterAction`.
 - `BaseCommerceHook` restricts callbacks to the commerce contract.
-- `ReputationGateHook` is a concrete PACT policy hook that enforces a minimum provider score on assignment/funding and records callback activity for auditing.
+- `ReputationGateHook` is a concrete PACT policy hook that enforces a minimum provider score on assignment/funding, emits `ProviderScoreVerified`, and records callback + score-check activity for auditing.
 
 PACT-specific direction carried through hooks:
 - Reputation gating and allowlists
@@ -77,6 +78,7 @@ Purpose:
 - Demonstrates the ERC-8183 evaluator as a contract address.
 - Reads the submitted deliverable commitment from `PactCommerce`.
 - Completes or rejects the job based on a configured deterministic expectation.
+- Forwards opaque evaluator `optParams` into `PactCommerce` so receipt bundles, proof URIs, or policy metadata survive into hook processing.
 
 This is the PACT path for zk-proof verifiers, receipts, or other deterministic validation contracts. Human judges, multisigs, and DAOs fit the same surface by simply being the `evaluator` address on a job.
 
@@ -96,6 +98,7 @@ The rest of the repository remains unchanged:
 - human-judge completion with the client acting as evaluator
 - client rejection from `Open`
 - expiry reclaim
-- hook enforcement and callback recording
+- payout previewing for frontends and settlement UX
+- hook enforcement, callback recording, and provider-score verification telemetry
 - rollback when an `afterAction` policy hook rejects settlement
-- deterministic evaluator completion and rejection paths
+- deterministic evaluator completion and rejection paths, including forwarded opaque evaluation params

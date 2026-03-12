@@ -58,4 +58,6 @@ interface IPactCommerce {
     function reject(uint256 jobId, bytes32 reason, bytes calldata optParams) external;
 
     function claimRefund(uint256 jobId) external;
+
+    function previewPayout(uint256 jobId) external view returns (uint256 providerAmount, uint256 feeAmount);
 }

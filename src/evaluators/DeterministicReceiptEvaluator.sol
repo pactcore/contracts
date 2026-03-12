@@ -8,6 +8,14 @@ import {IPactCommerce} from "../interfaces/IPactCommerce.sol";
 contract DeterministicReceiptEvaluator is Ownable {
     IPactCommerce public immutable commerce;
 
+    event ExpectationConfigured(
+        uint256 indexed jobId, bytes32 expectedDeliverable, bytes32 successAttestation, bytes32 failureAttestation
+    );
+    event ExpectationCleared(uint256 indexed jobId);
+    event JobEvaluated(
+        uint256 indexed jobId, bool success, bytes32 actualDeliverable, bytes32 expectedDeliverable, bytes32 attestation
+    );
+
     struct Expectation {
         bytes32 expectedDeliverable;
         bytes32 successAttestation;
@@ -37,18 +45,39 @@ contract DeterministicReceiptEvaluator is Ownable {
             failureAttestation: failureAttestation,
             configured: true
         });
+
+        emit ExpectationConfigured(jobId, expectedDeliverable, successAttestation, failureAttestation);
+    }
+
+    function clearExpectation(uint256 jobId) external onlyOwner {
+        delete expectations[jobId];
+        emit ExpectationCleared(jobId);
     }
 
     function evaluate(uint256 jobId) external {
+        _evaluate(jobId, "");
+    }
+
+    function evaluate(uint256 jobId, bytes calldata optParams) external {
+        _evaluate(jobId, optParams);
+    }
+
+    function _evaluate(uint256 jobId, bytes memory optParams) internal {
         Expectation memory expectation = expectations[jobId];
         if (!expectation.configured) revert ExpectationNotConfigured();
 
         IPactCommerce.Job memory job = commerce.getJob(jobId);
         if (job.deliverable == expectation.expectedDeliverable) {
-            commerce.complete(jobId, expectation.successAttestation, abi.encode(job.deliverable));
+            commerce.complete(jobId, expectation.successAttestation, optParams);
+            emit JobEvaluated(
+                jobId, true, job.deliverable, expectation.expectedDeliverable, expectation.successAttestation
+            );
             return;
         }
 
-        commerce.reject(jobId, expectation.failureAttestation, abi.encode(job.deliverable, expectation.expectedDeliverable));
+        commerce.reject(jobId, expectation.failureAttestation, optParams);
+        emit JobEvaluated(
+            jobId, false, job.deliverable, expectation.expectedDeliverable, expectation.failureAttestation
+        );
     }
 }

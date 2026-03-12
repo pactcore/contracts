@@ -120,6 +120,17 @@ contract PactCommerceTest is Test {
         assertEq(reputationHook.lastAfterSelector(), commerce.FUND_SELECTOR());
     }
 
+    function testPreviewPayoutReturnsProviderAndFeeSplit() external {
+        uint256 jobId = _createJob(provider, evaluator, address(0), 7 days);
+        vm.prank(client);
+        commerce.setBudget(jobId, BUDGET);
+
+        (uint256 providerAmount, uint256 feeAmount) = commerce.previewPayout(jobId);
+
+        assertEq(feeAmount, (BUDGET * PLATFORM_FEE_BPS) / 10_000);
+        assertEq(providerAmount, BUDGET - feeAmount);
+    }
+
     function testHookBlocksFundingUntilProviderMeetsReputationThreshold() external {
         uint256 jobId = _createJob(address(0), evaluator, address(reputationHook), 5 days);
 
@@ -144,6 +155,9 @@ contract PactCommerceTest is Test {
         assertEq(reputationHook.lastAfterJobId(), jobId);
         assertEq(reputationHook.lastBeforeSelector(), commerce.FUND_SELECTOR());
         assertEq(reputationHook.lastAfterSelector(), commerce.FUND_SELECTOR());
+        assertEq(reputationHook.lastCheckedProvider(), provider);
+        assertEq(reputationHook.lastCheckedScore(), 100);
+        assertEq(reputationHook.lastRequiredScore(), MINIMUM_PROVIDER_SCORE);
     }
 
     function testDeterministicEvaluatorCompletesWhenSubmissionMatchesExpectation() external {
@@ -165,6 +179,29 @@ contract PactCommerceTest is Test {
         assertEq(usdc.balanceOf(provider), BUDGET - ((BUDGET * PLATFORM_FEE_BPS) / 10_000));
     }
 
+    function testDeterministicEvaluatorForwardsCompletionOptParamsIntoHooks() external {
+        reputationHook.setProviderScore(provider, 100);
+
+        uint256 jobId =
+            _createAndFundJob(provider, address(deterministicEvaluator), address(reputationHook), BUDGET, 7 days);
+        bytes32 deliverable = keccak256("proof-commitment");
+        bytes32 successAttestation = keccak256("zk-receipt");
+        bytes32 failureAttestation = keccak256("invalid-proof");
+        bytes memory evaluatorOptParams = abi.encode("receipt://bundle", uint256(7));
+
+        deterministicEvaluator.setExpectation(jobId, deliverable, successAttestation, failureAttestation);
+
+        vm.prank(provider);
+        commerce.submit(jobId, deliverable);
+
+        deterministicEvaluator.evaluate(jobId, evaluatorOptParams);
+
+        assertEq(reputationHook.lastBeforeSelector(), commerce.COMPLETE_SELECTOR());
+        assertEq(reputationHook.lastAfterSelector(), commerce.COMPLETE_SELECTOR());
+        assertEq(reputationHook.lastBeforeDataHash(), keccak256(abi.encode(successAttestation, evaluatorOptParams)));
+        assertEq(reputationHook.lastAfterDataHash(), keccak256(abi.encode(successAttestation, evaluatorOptParams)));
+    }
+
     function testDeterministicEvaluatorRejectsMismatchedSubmission() external {
         uint256 jobId = _createAndFundJob(provider, address(deterministicEvaluator), address(0), BUDGET, 7 days);
         bytes32 expectedDeliverable = keccak256("expected-proof");
@@ -184,6 +221,30 @@ contract PactCommerceTest is Test {
         assertEq(job.attestation, failureAttestation);
         assertEq(usdc.balanceOf(client), INITIAL_BALANCE);
         assertEq(usdc.balanceOf(address(commerce)), 0);
+    }
+
+    function testDeterministicEvaluatorForwardsRejectOptParamsIntoHooks() external {
+        reputationHook.setProviderScore(provider, 100);
+
+        uint256 jobId =
+            _createAndFundJob(provider, address(deterministicEvaluator), address(reputationHook), BUDGET, 7 days);
+        bytes32 expectedDeliverable = keccak256("expected-proof");
+        bytes32 wrongDeliverable = keccak256("wrong-proof");
+        bytes32 successAttestation = keccak256("zk-receipt");
+        bytes32 failureAttestation = keccak256("invalid-proof");
+        bytes memory evaluatorOptParams = abi.encode("proof://mismatch", uint256(11));
+
+        deterministicEvaluator.setExpectation(jobId, expectedDeliverable, successAttestation, failureAttestation);
+
+        vm.prank(provider);
+        commerce.submit(jobId, wrongDeliverable);
+
+        deterministicEvaluator.evaluate(jobId, evaluatorOptParams);
+
+        assertEq(reputationHook.lastBeforeSelector(), commerce.REJECT_SELECTOR());
+        assertEq(reputationHook.lastAfterSelector(), commerce.REJECT_SELECTOR());
+        assertEq(reputationHook.lastBeforeDataHash(), keccak256(abi.encode(failureAttestation, evaluatorOptParams)));
+        assertEq(reputationHook.lastAfterDataHash(), keccak256(abi.encode(failureAttestation, evaluatorOptParams)));
     }
 
     function testClientAsHumanJudgeCanCompleteSubmittedJob() external {

@@ -78,10 +78,13 @@ contract PactCommerce is IPactCommerce, Ownable, ReentrancyGuard {
         return createJob(provider, evaluator, expiredAt, description, address(0));
     }
 
-    function createJob(address provider, address evaluator, uint256 expiredAt, string calldata description, address hook)
-        public
-        returns (uint256 jobId)
-    {
+    function createJob(
+        address provider,
+        address evaluator,
+        uint256 expiredAt,
+        string calldata description,
+        address hook
+    ) public returns (uint256 jobId) {
         if (evaluator == address(0)) revert ZeroAddress();
         if (expiredAt <= block.timestamp) revert InvalidExpiry();
 
@@ -284,6 +287,13 @@ contract PactCommerce is IPactCommerce, Ownable, ReentrancyGuard {
 
     function getNextJobId() external view returns (uint256) {
         return nextJobId;
+    }
+
+    function previewPayout(uint256 jobId) external view returns (uint256 providerAmount, uint256 feeAmount) {
+        Job storage job = _getJob(jobId);
+
+        feeAmount = (job.budget * platformFeeBps) / 10_000;
+        providerAmount = job.budget - feeAmount;
     }
 
     function _beforeAction(Job storage job, uint256 jobId, bytes4 selector, bytes memory data) internal {
