@@ -5,6 +5,8 @@ import {Test} from "forge-std/Test.sol";
 
 import {PactCommerce} from "../src/PactCommerce.sol";
 import {DeterministicReceiptEvaluator} from "../src/evaluators/DeterministicReceiptEvaluator.sol";
+import {GovernanceReviewEvaluator} from "../src/evaluators/GovernanceReviewEvaluator.sol";
+import {PactGovernance} from "../src/PactGovernance.sol";
 import {ReputationGateHook} from "../src/hooks/ReputationGateHook.sol";
 import {IPactCommerce} from "../src/interfaces/IPactCommerce.sol";
 import {MockFailingCommerceHook} from "./mocks/MockFailingCommerceHook.sol";
@@ -15,27 +17,47 @@ contract PactCommerceTest is Test {
     PactCommerce private commerce;
     ReputationGateHook private reputationHook;
     DeterministicReceiptEvaluator private deterministicEvaluator;
+    MockUSDC private governanceToken;
+    PactGovernance private governance;
+    GovernanceReviewEvaluator private governanceEvaluator;
 
     address private client = makeAddr("client");
     address private provider = makeAddr("provider");
     address private evaluator = makeAddr("evaluator");
     address private treasury = makeAddr("treasury");
     address private outsider = makeAddr("outsider");
+    address private voterA = makeAddr("voterA");
+    address private voterB = makeAddr("voterB");
 
     uint256 private constant INITIAL_BALANCE = 20_000e6;
     uint256 private constant BUDGET = 1_000e6;
     uint16 private constant PLATFORM_FEE_BPS = 500;
     uint256 private constant MINIMUM_PROVIDER_SCORE = 80;
+    uint64 private constant VOTING_DELAY = 1;
+    uint64 private constant VOTING_PERIOD = 3 days;
+    uint64 private constant TIMELOCK_DELAY = 1 days;
+    uint256 private constant PROPOSAL_THRESHOLD = 100e6;
+    uint256 private constant QUORUM = 500e6;
+    uint256 private constant VOTER_A_POWER = 2_000e6;
+    uint256 private constant VOTER_B_POWER = 1_000e6;
 
     function setUp() external {
         usdc = new MockUSDC();
         commerce = new PactCommerce(address(usdc), treasury, PLATFORM_FEE_BPS);
         reputationHook = new ReputationGateHook(address(commerce), MINIMUM_PROVIDER_SCORE);
         deterministicEvaluator = new DeterministicReceiptEvaluator(address(commerce));
+        governanceToken = new MockUSDC();
+        governance = new PactGovernance(
+            address(governanceToken), VOTING_DELAY, VOTING_PERIOD, TIMELOCK_DELAY, PROPOSAL_THRESHOLD, QUORUM
+        );
+        governanceEvaluator = new GovernanceReviewEvaluator(address(commerce), address(governance));
 
         usdc.mint(client, INITIAL_BALANCE);
         vm.prank(client);
         usdc.approve(address(commerce), type(uint256).max);
+
+        governanceToken.mint(voterA, VOTER_A_POWER);
+        governanceToken.mint(voterB, VOTER_B_POWER);
     }
 
     function testLifecycleCompletesAndReleasesEscrow() external {
@@ -267,6 +289,63 @@ contract PactCommerceTest is Test {
         assertEq(usdc.balanceOf(treasury), feeAmount);
     }
 
+    function testGovernanceEvaluatorCompletesSubmittedJobAfterProposalExecution() external {
+        reputationHook.setProviderScore(provider, 100);
+
+        uint256 jobId =
+            _createAndFundJob(provider, address(governanceEvaluator), address(reputationHook), BUDGET, 7 days);
+        bytes32 deliverable = keccak256("deliverable:dao-review");
+        bytes32 attestation = keccak256("dao:approved");
+        bytes memory evaluatorOptParams = abi.encode("vote://proposal-approval", uint256(42));
+
+        vm.prank(provider);
+        commerce.submit(jobId, deliverable, abi.encode("artifact://submission"));
+
+        uint256 proposalId = _createGovernanceDecisionProposal(jobId, true, attestation, evaluatorOptParams);
+
+        _voteForAndExecuteProposal(proposalId);
+
+        IPactCommerce.Job memory job = commerce.getJob(jobId);
+        uint256 feeAmount = (BUDGET * PLATFORM_FEE_BPS) / 10_000;
+
+        assertEq(uint8(job.status), uint8(IPactCommerce.Status.Completed));
+        assertEq(job.attestation, attestation);
+        assertEq(usdc.balanceOf(provider), BUDGET - feeAmount);
+        assertEq(usdc.balanceOf(treasury), feeAmount);
+        assertEq(reputationHook.lastBeforeSelector(), commerce.COMPLETE_SELECTOR());
+        assertEq(reputationHook.lastAfterSelector(), commerce.COMPLETE_SELECTOR());
+        assertEq(reputationHook.lastBeforeDataHash(), keccak256(abi.encode(attestation, evaluatorOptParams)));
+        assertEq(reputationHook.lastAfterDataHash(), keccak256(abi.encode(attestation, evaluatorOptParams)));
+    }
+
+    function testGovernanceEvaluatorRejectsSubmittedJobAfterProposalExecution() external {
+        reputationHook.setProviderScore(provider, 100);
+
+        uint256 jobId =
+            _createAndFundJob(provider, address(governanceEvaluator), address(reputationHook), BUDGET, 7 days);
+        bytes32 deliverable = keccak256("deliverable:dao-reject");
+        bytes32 attestation = keccak256("dao:rejected");
+        bytes memory evaluatorOptParams = abi.encode("vote://proposal-rejection", uint256(7));
+
+        vm.prank(provider);
+        commerce.submit(jobId, deliverable);
+
+        uint256 proposalId = _createGovernanceDecisionProposal(jobId, false, attestation, evaluatorOptParams);
+
+        _voteForAndExecuteProposal(proposalId);
+
+        IPactCommerce.Job memory job = commerce.getJob(jobId);
+
+        assertEq(uint8(job.status), uint8(IPactCommerce.Status.Rejected));
+        assertEq(job.attestation, attestation);
+        assertEq(usdc.balanceOf(client), INITIAL_BALANCE);
+        assertEq(usdc.balanceOf(address(commerce)), 0);
+        assertEq(reputationHook.lastBeforeSelector(), commerce.REJECT_SELECTOR());
+        assertEq(reputationHook.lastAfterSelector(), commerce.REJECT_SELECTOR());
+        assertEq(reputationHook.lastBeforeDataHash(), keccak256(abi.encode(attestation, evaluatorOptParams)));
+        assertEq(reputationHook.lastAfterDataHash(), keccak256(abi.encode(attestation, evaluatorOptParams)));
+    }
+
     function testAfterActionFailureRollsBackCompletionAndEscrowRelease() external {
         MockFailingCommerceHook failingHook = new MockFailingCommerceHook(address(commerce));
         failingHook.setFailure(commerce.COMPLETE_SELECTOR(), false, true);
@@ -315,5 +394,31 @@ contract PactCommerceTest is Test {
         jobId = commerce.createJob(
             jobProvider, jobEvaluator, block.timestamp + expiryOffset, "ERC-8183 aligned commerce job", hook
         );
+    }
+
+    function _createGovernanceDecisionProposal(uint256 jobId, bool approve, bytes32 attestation, bytes memory optParams)
+        internal
+        returns (uint256 proposalId)
+    {
+        vm.prank(voterA);
+        proposalId = governance.createCommerceDecisionProposal(
+            address(governanceEvaluator), jobId, approve, attestation, optParams, "governance evaluator decision"
+        );
+    }
+
+    function _voteForAndExecuteProposal(uint256 proposalId) internal {
+        vm.warp(block.timestamp + VOTING_DELAY + 1);
+
+        vm.prank(voterA);
+        governance.vote(proposalId, true);
+
+        vm.prank(voterB);
+        governance.vote(proposalId, true);
+
+        PactGovernance.Proposal memory proposal = governance.getProposal(proposalId);
+
+        vm.warp(uint256(proposal.endTime) + 1);
+        vm.warp(uint256(proposal.eta) + 1);
+        governance.execute(proposalId);
     }
 }

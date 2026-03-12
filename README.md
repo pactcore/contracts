@@ -82,6 +82,20 @@ Purpose:
 
 This is the PACT path for zk-proof verifiers, receipts, or other deterministic validation contracts. Human judges, multisigs, and DAOs fit the same surface by simply being the `evaluator` address on a job.
 
+### Governance Evaluator
+Files:
+- `src/evaluators/GovernanceReviewEvaluator.sol`
+- `src/interfaces/IGovernanceEvaluator.sol`
+- `src/PactGovernance.sol`
+
+Purpose:
+- Turns DAO review into a concrete ERC-8183 evaluator path.
+- Lets tokenholders create `createCommerceDecisionProposal(...)` proposals that target a governance-owned evaluator contract.
+- After the proposal clears voting + timelock, governance executes the evaluator call, which then completes or rejects the job from the evaluator address.
+- Preserves opaque evaluator `optParams` all the way through to `PactCommerce` hooks, so governance decisions can carry proposal URIs, evidence bundles, or offchain deliberation metadata.
+
+This gives PACT a tested human/DAO review flow without changing the underlying ERC-8183 job permissions: `PactCommerce` still only accepts settlement from the configured evaluator address.
+
 ## Other Contracts
 
 The rest of the repository remains unchanged:
@@ -96,9 +110,12 @@ The rest of the repository remains unchanged:
 - full lifecycle completion
 - evaluator rejection from `Funded` and `Submitted`
 - human-judge completion with the client acting as evaluator
+- governance-evaluator completion and rejection after DAO proposal execution
 - client rejection from `Open`
 - expiry reclaim
 - payout previewing for frontends and settlement UX
 - hook enforcement, callback recording, and provider-score verification telemetry
 - rollback when an `afterAction` policy hook rejects settlement
 - deterministic evaluator completion and rejection paths, including forwarded opaque evaluation params
+
+`test/PactGovernance.t.sol` also covers governance-authored ERC-8183 decision proposals and verifies the encoded call target/data for the governance evaluator path.

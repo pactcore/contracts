@@ -5,6 +5,8 @@ import {IERC20} from "openzeppelin-contracts/contracts/token/ERC20/IERC20.sol";
 import {Ownable} from "openzeppelin-contracts/contracts/access/Ownable.sol";
 import {ReentrancyGuard} from "openzeppelin-contracts/contracts/utils/ReentrancyGuard.sol";
 
+import {IGovernanceEvaluator} from "./interfaces/IGovernanceEvaluator.sol";
+
 contract PactGovernance is Ownable, ReentrancyGuard {
     enum ProposalState {
         Pending,
@@ -89,6 +91,25 @@ contract PactGovernance is Ownable, ReentrancyGuard {
 
     function createProposal(address target, uint256 value, bytes calldata data, string calldata description)
         external
+        returns (uint256 proposalId)
+    {
+        proposalId = _createProposal(target, value, data, description);
+    }
+
+    function createCommerceDecisionProposal(
+        address evaluator,
+        uint256 jobId,
+        bool approve,
+        bytes32 reason,
+        bytes calldata optParams,
+        string calldata description
+    ) external returns (uint256 proposalId) {
+        bytes memory data = abi.encodeCall(IGovernanceEvaluator.executeDecision, (jobId, approve, reason, optParams));
+        proposalId = _createProposal(evaluator, 0, data, description);
+    }
+
+    function _createProposal(address target, uint256 value, bytes memory data, string calldata description)
+        internal
         returns (uint256 proposalId)
     {
         if (target == address(0)) revert ZeroAddress();
