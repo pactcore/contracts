@@ -39,6 +39,9 @@ interface IPactCommerce {
     function setProvider(uint256 jobId, address provider) external;
     function setProvider(uint256 jobId, address provider, bytes calldata optParams) external;
 
+    function setEvaluator(uint256 jobId, address evaluator) external;
+    function setEvaluator(uint256 jobId, address evaluator, bytes calldata optParams) external;
+
     function setBudget(uint256 jobId, uint256 amount) external;
     function setBudget(uint256 jobId, uint256 amount, bytes calldata optParams) external;
 

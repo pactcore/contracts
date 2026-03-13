@@ -37,7 +37,8 @@ Purpose:
 - Escrows a single ERC-20 payment token per contract and settles deterministically.
 - Supports optional platform fee payout to a treasury on completion only.
 - Stores onchain job records: description, deliverable reference, evaluator attestation, and terminal status.
-- Exposes the standard hook surface around `setProvider`, `setBudget`, `fund`, `submit`, `complete`, and `reject`.
+- Allows evaluator assignment or replacement while a job remains `Open`, including jobs created without an evaluator.
+- Exposes the standard hook surface around `setProvider`, `setEvaluator`, `setBudget`, `fund`, `submit`, `complete`, and `reject`.
 - Bounds external hook execution with `HOOK_GAS_LIMIT` so policy hooks cannot consume unbounded gas.
 - Exposes `previewPayout(jobId)` so clients and frontends can quote provider/treasury settlement before completion.
 
@@ -49,15 +50,17 @@ Roles:
 Core lifecycle:
 1. `createJob(provider, evaluator, expiredAt, description, hook)`
 2. `setProvider(jobId, provider, optParams)` when created with `provider = address(0)`
-3. `setBudget(jobId, amount, optParams)`
-4. `fund(jobId, expectedBudget, optParams)`
-5. `submit(jobId, deliverable, optParams)`
-6. `complete(jobId, reason, optParams)` or `reject(jobId, reason, optParams)`
-7. `claimRefund(jobId)` after expiry from `Funded` or `Submitted`
+3. `setEvaluator(jobId, evaluator, optParams)` when review authority is selected later or replaced during negotiation
+4. `setBudget(jobId, amount, optParams)`
+5. `fund(jobId, expectedBudget, optParams)`
+6. `submit(jobId, deliverable, optParams)`
+7. `complete(jobId, reason, optParams)` or `reject(jobId, reason, optParams)`
+8. `claimRefund(jobId)` after expiry from `Funded` or `Submitted`
 
 Events:
 - `JobCreated`
 - `ProviderSet`
+- `EvaluatorSet`
 - `BudgetSet`
 - `JobFunded`
 - `JobSubmitted`
@@ -106,6 +109,7 @@ Files:
 Purpose:
 - Turns DAO review into a concrete ERC-8183 evaluator path.
 - Lets tokenholders create `createCommerceDecisionProposal(...)` proposals that target a governance-owned evaluator contract.
+- Works cleanly with deferred evaluator selection, so a client can create a job first and later route review authority to governance before funding.
 - After the proposal clears voting and timelock, governance executes the evaluator call, which then completes or rejects the job from the evaluator address.
 - Preserves opaque evaluator `optParams` all the way through to `PactCommerce` hooks, so governance decisions can carry proposal URIs, evidence bundles, or offchain deliberation metadata.
 

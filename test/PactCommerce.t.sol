@@ -153,6 +153,81 @@ contract PactCommerceTest is Test {
         assertEq(providerAmount, BUDGET - feeAmount);
     }
 
+    function testClientCanAssignEvaluatorLaterAndHooksReceiveOptParams() external {
+        reputationHook.setProviderScore(provider, 100);
+
+        uint256 jobId = _createJob(provider, address(0), address(reputationHook), 7 days);
+        bytes memory evaluatorOptParams = abi.encode("review://shortlist", uint256(2));
+
+        vm.prank(client);
+        commerce.setEvaluator(jobId, evaluator, evaluatorOptParams);
+
+        IPactCommerce.Job memory job = commerce.getJob(jobId);
+        assertEq(job.evaluator, evaluator);
+        assertEq(reputationHook.lastBeforeSelector(), commerce.SET_EVALUATOR_SELECTOR());
+        assertEq(reputationHook.lastAfterSelector(), commerce.SET_EVALUATOR_SELECTOR());
+        assertEq(reputationHook.lastBeforeDataHash(), keccak256(abi.encode(evaluator, evaluatorOptParams)));
+        assertEq(reputationHook.lastAfterDataHash(), keccak256(abi.encode(evaluator, evaluatorOptParams)));
+
+        vm.prank(client);
+        commerce.setBudget(jobId, BUDGET);
+        vm.prank(client);
+        commerce.fund(jobId, BUDGET);
+
+        bytes32 deliverable = keccak256("deliverable:late-evaluator");
+        bytes32 attestation = keccak256("attestation:late-evaluator-approved");
+
+        vm.prank(provider);
+        commerce.submit(jobId, deliverable);
+
+        vm.prank(evaluator);
+        commerce.complete(jobId, attestation);
+
+        job = commerce.getJob(jobId);
+        assertEq(uint8(job.status), uint8(IPactCommerce.Status.Completed));
+        assertEq(job.attestation, attestation);
+    }
+
+    function testClientCanSwapEvaluatorWhileOpen() external {
+        address replacementEvaluator = makeAddr("replacementEvaluator");
+        uint256 jobId = _createJob(provider, evaluator, address(0), 7 days);
+
+        vm.prank(client);
+        commerce.setEvaluator(jobId, replacementEvaluator);
+
+        IPactCommerce.Job memory job = commerce.getJob(jobId);
+        assertEq(job.evaluator, replacementEvaluator);
+
+        vm.prank(client);
+        commerce.setBudget(jobId, BUDGET);
+        vm.prank(client);
+        commerce.fund(jobId, BUDGET);
+
+        vm.prank(provider);
+        commerce.submit(jobId, keccak256("deliverable:replacement-evaluator"));
+
+        vm.expectRevert(PactCommerce.UnauthorizedCaller.selector);
+        vm.prank(evaluator);
+        commerce.complete(jobId, keccak256("attestation:stale-evaluator"));
+
+        vm.prank(replacementEvaluator);
+        commerce.complete(jobId, keccak256("attestation:new-evaluator"));
+
+        job = commerce.getJob(jobId);
+        assertEq(uint8(job.status), uint8(IPactCommerce.Status.Completed));
+    }
+
+    function testFundingRevertsUntilEvaluatorIsAssigned() external {
+        uint256 jobId = _createJob(provider, address(0), address(0), 7 days);
+
+        vm.prank(client);
+        commerce.setBudget(jobId, BUDGET);
+
+        vm.expectRevert(PactCommerce.EvaluatorRequired.selector);
+        vm.prank(client);
+        commerce.fund(jobId, BUDGET);
+    }
+
     function testHookBlocksFundingUntilProviderMeetsReputationThreshold() external {
         uint256 jobId = _createJob(address(0), evaluator, address(reputationHook), 5 days);
 
