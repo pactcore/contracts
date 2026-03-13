@@ -7,6 +7,7 @@ import {PactCommerce} from "../src/PactCommerce.sol";
 import {DeterministicReceiptEvaluator} from "../src/evaluators/DeterministicReceiptEvaluator.sol";
 import {GovernanceReviewEvaluator} from "../src/evaluators/GovernanceReviewEvaluator.sol";
 import {PactGovernance} from "../src/PactGovernance.sol";
+import {ApprovedEvaluatorHook} from "../src/hooks/ApprovedEvaluatorHook.sol";
 import {ReputationGateHook} from "../src/hooks/ReputationGateHook.sol";
 import {IPactCommerce} from "../src/interfaces/IPactCommerce.sol";
 import {MockFailingCommerceHook} from "./mocks/MockFailingCommerceHook.sol";
@@ -15,6 +16,7 @@ import {MockUSDC} from "./mocks/MockUSDC.sol";
 contract PactCommerceTest is Test {
     MockUSDC private usdc;
     PactCommerce private commerce;
+    ApprovedEvaluatorHook private approvedEvaluatorHook;
     ReputationGateHook private reputationHook;
     DeterministicReceiptEvaluator private deterministicEvaluator;
     MockUSDC private governanceToken;
@@ -44,6 +46,7 @@ contract PactCommerceTest is Test {
     function setUp() external {
         usdc = new MockUSDC();
         commerce = new PactCommerce(address(usdc), treasury, PLATFORM_FEE_BPS);
+        approvedEvaluatorHook = new ApprovedEvaluatorHook(address(commerce));
         reputationHook = new ReputationGateHook(address(commerce), MINIMUM_PROVIDER_SCORE);
         deterministicEvaluator = new DeterministicReceiptEvaluator(address(commerce));
         governanceToken = new MockUSDC();
@@ -226,6 +229,90 @@ contract PactCommerceTest is Test {
         vm.expectRevert(PactCommerce.EvaluatorRequired.selector);
         vm.prank(client);
         commerce.fund(jobId, BUDGET);
+    }
+
+    function testApprovedEvaluatorHookBlocksUnapprovedAssignment() external {
+        uint256 jobId = _createJob(provider, address(0), address(approvedEvaluatorHook), 7 days);
+        bytes memory evaluatorOptParams = abi.encode("policy://candidate", uint256(1));
+
+        vm.expectRevert(abi.encodeWithSelector(ApprovedEvaluatorHook.EvaluatorNotApproved.selector, evaluator));
+        vm.prank(client);
+        commerce.setEvaluator(jobId, evaluator, evaluatorOptParams);
+
+        approvedEvaluatorHook.setEvaluatorApproval(evaluator, true);
+
+        vm.prank(client);
+        commerce.setEvaluator(jobId, evaluator, evaluatorOptParams);
+
+        IPactCommerce.Job memory job = commerce.getJob(jobId);
+        assertEq(job.evaluator, evaluator);
+        assertEq(approvedEvaluatorHook.lastBeforeSelector(), commerce.SET_EVALUATOR_SELECTOR());
+        assertEq(approvedEvaluatorHook.lastAfterSelector(), commerce.SET_EVALUATOR_SELECTOR());
+        assertEq(approvedEvaluatorHook.lastBeforeDataHash(), keccak256(abi.encode(evaluator, evaluatorOptParams)));
+        assertEq(approvedEvaluatorHook.lastAfterDataHash(), keccak256(abi.encode(evaluator, evaluatorOptParams)));
+        assertEq(approvedEvaluatorHook.lastCheckedEvaluator(), evaluator);
+        assertTrue(approvedEvaluatorHook.lastCheckedApproval());
+    }
+
+    function testApprovedEvaluatorHookRechecksApprovalAtFunding() external {
+        approvedEvaluatorHook.setEvaluatorApproval(address(governanceEvaluator), true);
+
+        uint256 jobId = _createJob(provider, address(governanceEvaluator), address(approvedEvaluatorHook), 7 days);
+
+        vm.prank(client);
+        commerce.setBudget(jobId, BUDGET, abi.encode("quoted-budget"));
+
+        approvedEvaluatorHook.setEvaluatorApproval(address(governanceEvaluator), false);
+
+        vm.expectRevert(
+            abi.encodeWithSelector(ApprovedEvaluatorHook.EvaluatorNotApproved.selector, address(governanceEvaluator))
+        );
+        vm.prank(client);
+        commerce.fund(jobId, BUDGET, abi.encode("funding-check"));
+
+        approvedEvaluatorHook.setEvaluatorApproval(address(governanceEvaluator), true);
+
+        vm.prank(client);
+        commerce.fund(jobId, BUDGET, abi.encode("funding-check"));
+
+        assertEq(approvedEvaluatorHook.lastBeforeSelector(), commerce.FUND_SELECTOR());
+        assertEq(approvedEvaluatorHook.lastAfterSelector(), commerce.FUND_SELECTOR());
+        assertEq(approvedEvaluatorHook.lastBeforeDataHash(), keccak256(abi.encode("funding-check")));
+        assertEq(approvedEvaluatorHook.lastAfterDataHash(), keccak256(abi.encode("funding-check")));
+        assertEq(approvedEvaluatorHook.lastCheckedEvaluator(), address(governanceEvaluator));
+        assertTrue(approvedEvaluatorHook.lastCheckedApproval());
+    }
+
+    function testApprovedEvaluatorHookSupportsGovernanceEvaluatorSettlement() external {
+        approvedEvaluatorHook.setEvaluatorApproval(address(governanceEvaluator), true);
+
+        uint256 jobId = _createJob(provider, address(0), address(approvedEvaluatorHook), 7 days);
+        bytes memory evaluatorOptParams = abi.encode("vote://assignment", uint256(9));
+        bytes32 deliverable = keccak256("deliverable:governance-policy");
+        bytes32 attestation = keccak256("dao:policy-approved");
+        bytes memory governanceOptParams = abi.encode("vote://proposal-approval", uint256(99));
+
+        vm.prank(client);
+        commerce.setEvaluator(jobId, address(governanceEvaluator), evaluatorOptParams);
+        vm.prank(client);
+        commerce.setBudget(jobId, BUDGET);
+        vm.prank(client);
+        commerce.fund(jobId, BUDGET);
+
+        vm.prank(provider);
+        commerce.submit(jobId, deliverable);
+
+        uint256 proposalId = _createGovernanceDecisionProposal(jobId, true, attestation, governanceOptParams);
+        _voteForAndExecuteProposal(proposalId);
+
+        IPactCommerce.Job memory job = commerce.getJob(jobId);
+        uint256 feeAmount = (BUDGET * PLATFORM_FEE_BPS) / 10_000;
+
+        assertEq(uint8(job.status), uint8(IPactCommerce.Status.Completed));
+        assertEq(job.evaluator, address(governanceEvaluator));
+        assertEq(job.attestation, attestation);
+        assertEq(usdc.balanceOf(provider), BUDGET - feeAmount);
+        assertEq(usdc.balanceOf(treasury), feeAmount);
     }
 
     function testHookBlocksFundingUntilProviderMeetsReputationThreshold() external {
