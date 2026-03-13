@@ -102,7 +102,8 @@ Purpose:
 - Demonstrates the ERC-8183 evaluator as a contract address.
 - Reads the submitted deliverable commitment from `PactCommerce`.
 - Completes or rejects the job based on a configured deterministic expectation.
-- Forwards opaque evaluator `optParams` into `PactCommerce` so receipt bundles, proof URIs, or policy metadata survive into hook processing.
+- Can additionally bind evaluation to the hash of opaque evaluator `optParams`, so receipt bundles or proof payloads are checked before settlement while still being forwarded into `PactCommerce` hooks.
+- Consumes expectations after evaluation so proof configurations are one-shot by default.
 
 This is the PACT path for zk-proof verifiers, receipts, or other deterministic validation contracts. Human judges, multisigs, and DAOs fit the same surface by simply being the `evaluator` address on a job.
 
@@ -141,7 +142,7 @@ The rest of the repository remains unchanged:
 - payout previewing for frontends and settlement UX
 - hook enforcement, callback recording, provider-score verification telemetry, evaluator allowlist enforcement, and combined counterparty policy enforcement
 - rollback when an `afterAction` policy hook rejects settlement
-- deterministic evaluator completion and rejection paths, including forwarded opaque evaluation params
+- deterministic evaluator completion and rejection paths, including forwarded opaque evaluation params, hash-bound proof bundle checks, and one-shot expectation consumption
 
 `test/PactGovernance.t.sol` also covers governance-authored ERC-8183 decision proposals and verifies the encoded call target/data for the governance evaluator path.
 
