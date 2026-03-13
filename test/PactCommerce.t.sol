@@ -8,6 +8,7 @@ import {DeterministicReceiptEvaluator} from "../src/evaluators/DeterministicRece
 import {GovernanceReviewEvaluator} from "../src/evaluators/GovernanceReviewEvaluator.sol";
 import {PactGovernance} from "../src/PactGovernance.sol";
 import {ApprovedEvaluatorHook} from "../src/hooks/ApprovedEvaluatorHook.sol";
+import {CounterpartyPolicyHook} from "../src/hooks/CounterpartyPolicyHook.sol";
 import {ReputationGateHook} from "../src/hooks/ReputationGateHook.sol";
 import {IPactCommerce} from "../src/interfaces/IPactCommerce.sol";
 import {MockFailingCommerceHook} from "./mocks/MockFailingCommerceHook.sol";
@@ -17,6 +18,7 @@ contract PactCommerceTest is Test {
     MockUSDC private usdc;
     PactCommerce private commerce;
     ApprovedEvaluatorHook private approvedEvaluatorHook;
+    CounterpartyPolicyHook private counterpartyPolicyHook;
     ReputationGateHook private reputationHook;
     DeterministicReceiptEvaluator private deterministicEvaluator;
     MockUSDC private governanceToken;
@@ -47,6 +49,7 @@ contract PactCommerceTest is Test {
         usdc = new MockUSDC();
         commerce = new PactCommerce(address(usdc), treasury, PLATFORM_FEE_BPS);
         approvedEvaluatorHook = new ApprovedEvaluatorHook(address(commerce));
+        counterpartyPolicyHook = new CounterpartyPolicyHook(address(commerce), MINIMUM_PROVIDER_SCORE);
         reputationHook = new ReputationGateHook(address(commerce), MINIMUM_PROVIDER_SCORE);
         deterministicEvaluator = new DeterministicReceiptEvaluator(address(commerce));
         governanceToken = new MockUSDC();
@@ -229,6 +232,128 @@ contract PactCommerceTest is Test {
         vm.expectRevert(PactCommerce.EvaluatorRequired.selector);
         vm.prank(client);
         commerce.fund(jobId, BUDGET);
+    }
+
+    function testCounterpartyPolicyHookEnforcesProviderAndEvaluatorAssignment() external {
+        uint256 jobId = _createJob(address(0), address(0), address(counterpartyPolicyHook), 7 days);
+        bytes memory providerOptParams = abi.encode("assignment://provider", uint256(1));
+        bytes memory evaluatorOptParams = abi.encode("assignment://evaluator", uint256(2));
+
+        vm.expectRevert(
+            abi.encodeWithSelector(
+                CounterpartyPolicyHook.ProviderScoreTooLow.selector, provider, uint256(0), MINIMUM_PROVIDER_SCORE
+            )
+        );
+        vm.prank(client);
+        commerce.setProvider(jobId, provider, providerOptParams);
+
+        counterpartyPolicyHook.setProviderScore(provider, 100);
+
+        vm.prank(client);
+        commerce.setProvider(jobId, provider, providerOptParams);
+
+        vm.expectRevert(abi.encodeWithSelector(CounterpartyPolicyHook.EvaluatorNotApproved.selector, evaluator));
+        vm.prank(client);
+        commerce.setEvaluator(jobId, evaluator, evaluatorOptParams);
+
+        counterpartyPolicyHook.setEvaluatorApproval(evaluator, true);
+
+        vm.prank(client);
+        commerce.setEvaluator(jobId, evaluator, evaluatorOptParams);
+
+        IPactCommerce.Job memory job = commerce.getJob(jobId);
+        assertEq(job.provider, provider);
+        assertEq(job.evaluator, evaluator);
+        assertEq(counterpartyPolicyHook.lastBeforeSelector(), commerce.SET_EVALUATOR_SELECTOR());
+        assertEq(counterpartyPolicyHook.lastAfterSelector(), commerce.SET_EVALUATOR_SELECTOR());
+        assertEq(counterpartyPolicyHook.lastBeforeDataHash(), keccak256(abi.encode(evaluator, evaluatorOptParams)));
+        assertEq(counterpartyPolicyHook.lastAfterDataHash(), keccak256(abi.encode(evaluator, evaluatorOptParams)));
+        assertEq(counterpartyPolicyHook.lastCheckedProvider(), provider);
+        assertEq(counterpartyPolicyHook.lastCheckedScore(), 100);
+        assertEq(counterpartyPolicyHook.lastCheckedEvaluator(), evaluator);
+        assertTrue(counterpartyPolicyHook.lastCheckedApproval());
+    }
+
+    function testCounterpartyPolicyHookRechecksBothPartiesAtFunding() external {
+        uint256 jobId = _createJob(provider, address(governanceEvaluator), address(counterpartyPolicyHook), 7 days);
+
+        counterpartyPolicyHook.setProviderScore(provider, 100);
+        counterpartyPolicyHook.setEvaluatorApproval(address(governanceEvaluator), true);
+
+        vm.prank(client);
+        commerce.setBudget(jobId, BUDGET, abi.encode("quoted-budget"));
+
+        counterpartyPolicyHook.setProviderScore(provider, 40);
+
+        vm.expectRevert(
+            abi.encodeWithSelector(
+                CounterpartyPolicyHook.ProviderScoreTooLow.selector, provider, uint256(40), MINIMUM_PROVIDER_SCORE
+            )
+        );
+        vm.prank(client);
+        commerce.fund(jobId, BUDGET, abi.encode("funding-pass"));
+
+        counterpartyPolicyHook.setProviderScore(provider, 100);
+        counterpartyPolicyHook.setEvaluatorApproval(address(governanceEvaluator), false);
+
+        vm.expectRevert(
+            abi.encodeWithSelector(CounterpartyPolicyHook.EvaluatorNotApproved.selector, address(governanceEvaluator))
+        );
+        vm.prank(client);
+        commerce.fund(jobId, BUDGET, abi.encode("funding-pass"));
+
+        counterpartyPolicyHook.setEvaluatorApproval(address(governanceEvaluator), true);
+
+        vm.prank(client);
+        commerce.fund(jobId, BUDGET, abi.encode("funding-pass"));
+
+        IPactCommerce.Job memory job = commerce.getJob(jobId);
+        assertEq(uint8(job.status), uint8(IPactCommerce.Status.Funded));
+        assertEq(counterpartyPolicyHook.lastBeforeSelector(), commerce.FUND_SELECTOR());
+        assertEq(counterpartyPolicyHook.lastAfterSelector(), commerce.FUND_SELECTOR());
+        assertEq(counterpartyPolicyHook.lastBeforeDataHash(), keccak256(abi.encode("funding-pass")));
+        assertEq(counterpartyPolicyHook.lastAfterDataHash(), keccak256(abi.encode("funding-pass")));
+        assertEq(counterpartyPolicyHook.lastCheckedProvider(), provider);
+        assertEq(counterpartyPolicyHook.lastCheckedScore(), 100);
+        assertEq(counterpartyPolicyHook.lastCheckedEvaluator(), address(governanceEvaluator));
+        assertTrue(counterpartyPolicyHook.lastCheckedApproval());
+    }
+
+    function testCounterpartyPolicyHookSupportsGovernanceEvaluatorCompletion() external {
+        uint256 jobId = _createJob(address(0), address(0), address(counterpartyPolicyHook), 7 days);
+        bytes32 deliverable = keccak256("deliverable:counterparty-policy");
+        bytes32 attestation = keccak256("dao:counterparty-approved");
+        bytes memory providerOptParams = abi.encode("assignment://provider", uint256(3));
+        bytes memory evaluatorOptParams = abi.encode("assignment://governance", uint256(4));
+        bytes memory governanceOptParams = abi.encode("vote://proposal-approval", uint256(123));
+
+        counterpartyPolicyHook.setProviderScore(provider, 100);
+        counterpartyPolicyHook.setEvaluatorApproval(address(governanceEvaluator), true);
+
+        vm.prank(client);
+        commerce.setProvider(jobId, provider, providerOptParams);
+        vm.prank(client);
+        commerce.setEvaluator(jobId, address(governanceEvaluator), evaluatorOptParams);
+        vm.prank(client);
+        commerce.setBudget(jobId, BUDGET);
+        vm.prank(client);
+        commerce.fund(jobId, BUDGET);
+
+        vm.prank(provider);
+        commerce.submit(jobId, deliverable, abi.encode("artifact://submission"));
+
+        uint256 proposalId = _createGovernanceDecisionProposal(jobId, true, attestation, governanceOptParams);
+        _voteForAndExecuteProposal(proposalId);
+
+        IPactCommerce.Job memory job = commerce.getJob(jobId);
+        uint256 feeAmount = (BUDGET * PLATFORM_FEE_BPS) / 10_000;
+
+        assertEq(uint8(job.status), uint8(IPactCommerce.Status.Completed));
+        assertEq(job.provider, provider);
+        assertEq(job.evaluator, address(governanceEvaluator));
+        assertEq(job.attestation, attestation);
+        assertEq(usdc.balanceOf(provider), BUDGET - feeAmount);
+        assertEq(usdc.balanceOf(treasury), feeAmount);
     }
 
     function testApprovedEvaluatorHookBlocksUnapprovedAssignment() external {

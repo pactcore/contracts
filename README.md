@@ -76,16 +76,19 @@ Files:
 - `src/hooks/BaseCommerceHook.sol`
 - `src/hooks/ReputationGateHook.sol`
 - `src/hooks/ApprovedEvaluatorHook.sol`
+- `src/hooks/CounterpartyPolicyHook.sol`
 
 Purpose:
 - `IACPHook` follows the ERC-8183 hook interface with `beforeAction` and `afterAction`.
 - `BaseCommerceHook` restricts callbacks to the commerce contract.
 - `ReputationGateHook` is a concrete PACT policy hook that enforces a minimum provider score on assignment/funding, emits `ProviderScoreVerified`, and records callback and score-check activity for auditing.
 - `ApprovedEvaluatorHook` is a companion evaluator-policy hook that allowlists trusted human judges, DAO evaluators, and zk/deterministic verifier contracts on assignment and funding.
+- `CounterpartyPolicyHook` combines provider-score gating and evaluator allowlists in one hook so a single ERC-8183 job can enforce both policies before funding.
 
 PACT-specific direction carried through hooks:
 - reputation gating and allowlists
 - evaluator allowlists for governance, human-review, or zk-verifier routes
+- combined provider/evaluator policy enforcement under the single-hook job model
 - privacy-preserving job policies via opaque `optParams`
 - underwriting and risk checks before funding
 - capital-transfer or fund-management side effects in `afterAction`
@@ -136,7 +139,7 @@ The rest of the repository remains unchanged:
 - client rejection from `Open`
 - expiry reclaim
 - payout previewing for frontends and settlement UX
-- hook enforcement, callback recording, provider-score verification telemetry, and evaluator allowlist enforcement
+- hook enforcement, callback recording, provider-score verification telemetry, evaluator allowlist enforcement, and combined counterparty policy enforcement
 - rollback when an `afterAction` policy hook rejects settlement
 - deterministic evaluator completion and rejection paths, including forwarded opaque evaluation params
 
