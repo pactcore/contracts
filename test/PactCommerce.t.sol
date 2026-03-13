@@ -469,6 +469,71 @@ contract PactCommerceTest is Test {
         assertEq(reputationHook.lastRequiredScore(), MINIMUM_PROVIDER_SCORE);
     }
 
+    function testDeterministicEvaluatorCompletesWhenOptParamsHashMatches() external {
+        uint256 jobId = _createAndFundJob(provider, address(deterministicEvaluator), address(0), BUDGET, 7 days);
+        bytes32 deliverable = keccak256("proof-commitment");
+        bytes32 successAttestation = keccak256("zk-receipt");
+        bytes32 failureAttestation = keccak256("invalid-proof");
+        bytes memory evaluatorOptParams = abi.encode("receipt://bundle", uint256(88));
+
+        deterministicEvaluator.setExpectationWithOptParamsHash(
+            jobId, deliverable, successAttestation, failureAttestation, keccak256(evaluatorOptParams)
+        );
+
+        vm.prank(provider);
+        commerce.submit(jobId, deliverable);
+
+        deterministicEvaluator.evaluate(jobId, evaluatorOptParams);
+
+        IPactCommerce.Job memory job = commerce.getJob(jobId);
+        assertEq(uint8(job.status), uint8(IPactCommerce.Status.Completed));
+        assertEq(job.attestation, successAttestation);
+        (,,,,, bool configured) = deterministicEvaluator.expectations(jobId);
+        assertFalse(configured);
+    }
+
+    function testDeterministicEvaluatorRejectsWhenOptParamsHashMismatches() external {
+        uint256 jobId = _createAndFundJob(provider, address(deterministicEvaluator), address(0), BUDGET, 7 days);
+        bytes32 deliverable = keccak256("proof-commitment");
+        bytes32 successAttestation = keccak256("zk-receipt");
+        bytes32 failureAttestation = keccak256("invalid-proof");
+        bytes memory expectedOptParams = abi.encode("receipt://bundle", uint256(88));
+        bytes memory wrongOptParams = abi.encode("receipt://bundle", uint256(99));
+
+        deterministicEvaluator.setExpectationWithOptParamsHash(
+            jobId, deliverable, successAttestation, failureAttestation, keccak256(expectedOptParams)
+        );
+
+        vm.prank(provider);
+        commerce.submit(jobId, deliverable);
+
+        deterministicEvaluator.evaluate(jobId, wrongOptParams);
+
+        IPactCommerce.Job memory job = commerce.getJob(jobId);
+        assertEq(uint8(job.status), uint8(IPactCommerce.Status.Rejected));
+        assertEq(job.attestation, failureAttestation);
+        assertEq(usdc.balanceOf(client), INITIAL_BALANCE);
+        (,,,,, bool configured) = deterministicEvaluator.expectations(jobId);
+        assertFalse(configured);
+    }
+
+    function testDeterministicEvaluatorClearsExpectationAfterEvaluation() external {
+        uint256 jobId = _createAndFundJob(provider, address(deterministicEvaluator), address(0), BUDGET, 7 days);
+        bytes32 deliverable = keccak256("proof-commitment");
+        bytes32 successAttestation = keccak256("zk-receipt");
+        bytes32 failureAttestation = keccak256("invalid-proof");
+
+        deterministicEvaluator.setExpectation(jobId, deliverable, successAttestation, failureAttestation);
+
+        vm.prank(provider);
+        commerce.submit(jobId, deliverable);
+
+        deterministicEvaluator.evaluate(jobId);
+
+        vm.expectRevert(DeterministicReceiptEvaluator.ExpectationNotConfigured.selector);
+        deterministicEvaluator.evaluate(jobId);
+    }
+
     function testDeterministicEvaluatorCompletesWhenSubmissionMatchesExpectation() external {
         uint256 jobId = _createAndFundJob(provider, address(deterministicEvaluator), address(0), BUDGET, 7 days);
         bytes32 deliverable = keccak256("proof-commitment");
@@ -502,6 +567,10 @@ contract PactCommerceTest is Test {
 
         vm.prank(provider);
         commerce.submit(jobId, deliverable);
+
+        deterministicEvaluator.setExpectationWithOptParamsHash(
+            jobId, deliverable, successAttestation, failureAttestation, keccak256(evaluatorOptParams)
+        );
 
         deterministicEvaluator.evaluate(jobId, evaluatorOptParams);
 
@@ -547,6 +616,10 @@ contract PactCommerceTest is Test {
 
         vm.prank(provider);
         commerce.submit(jobId, wrongDeliverable);
+
+        deterministicEvaluator.setExpectationWithOptParamsHash(
+            jobId, expectedDeliverable, successAttestation, failureAttestation, keccak256(evaluatorOptParams)
+        );
 
         deterministicEvaluator.evaluate(jobId, evaluatorOptParams);
 

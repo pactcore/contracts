@@ -11,15 +11,24 @@ contract DeterministicReceiptEvaluator is Ownable {
     event ExpectationConfigured(
         uint256 indexed jobId, bytes32 expectedDeliverable, bytes32 successAttestation, bytes32 failureAttestation
     );
+    event OptParamsHashConfigured(uint256 indexed jobId, bytes32 indexed expectedOptParamsHash);
     event ExpectationCleared(uint256 indexed jobId);
     event JobEvaluated(
-        uint256 indexed jobId, bool success, bytes32 actualDeliverable, bytes32 expectedDeliverable, bytes32 attestation
+        uint256 indexed jobId,
+        bool success,
+        bytes32 actualDeliverable,
+        bytes32 expectedDeliverable,
+        bytes32 attestation,
+        bytes32 optParamsHash,
+        bool optParamsHashMatched
     );
 
     struct Expectation {
         bytes32 expectedDeliverable;
         bytes32 successAttestation;
         bytes32 failureAttestation;
+        bytes32 expectedOptParamsHash;
+        bool requireOptParamsHash;
         bool configured;
     }
 
@@ -39,14 +48,17 @@ contract DeterministicReceiptEvaluator is Ownable {
         bytes32 successAttestation,
         bytes32 failureAttestation
     ) external onlyOwner {
-        expectations[jobId] = Expectation({
-            expectedDeliverable: expectedDeliverable,
-            successAttestation: successAttestation,
-            failureAttestation: failureAttestation,
-            configured: true
-        });
+        _setExpectation(jobId, expectedDeliverable, successAttestation, failureAttestation, bytes32(0), false);
+    }
 
-        emit ExpectationConfigured(jobId, expectedDeliverable, successAttestation, failureAttestation);
+    function setExpectationWithOptParamsHash(
+        uint256 jobId,
+        bytes32 expectedDeliverable,
+        bytes32 successAttestation,
+        bytes32 failureAttestation,
+        bytes32 expectedOptParamsHash
+    ) external onlyOwner {
+        _setExpectation(jobId, expectedDeliverable, successAttestation, failureAttestation, expectedOptParamsHash, true);
     }
 
     function clearExpectation(uint256 jobId) external onlyOwner {
@@ -62,22 +74,65 @@ contract DeterministicReceiptEvaluator is Ownable {
         _evaluate(jobId, optParams);
     }
 
+    function _setExpectation(
+        uint256 jobId,
+        bytes32 expectedDeliverable,
+        bytes32 successAttestation,
+        bytes32 failureAttestation,
+        bytes32 expectedOptParamsHash,
+        bool requireOptParamsHash
+    ) internal {
+        expectations[jobId] = Expectation({
+            expectedDeliverable: expectedDeliverable,
+            successAttestation: successAttestation,
+            failureAttestation: failureAttestation,
+            expectedOptParamsHash: expectedOptParamsHash,
+            requireOptParamsHash: requireOptParamsHash,
+            configured: true
+        });
+
+        emit ExpectationConfigured(jobId, expectedDeliverable, successAttestation, failureAttestation);
+        if (requireOptParamsHash) {
+            emit OptParamsHashConfigured(jobId, expectedOptParamsHash);
+        }
+    }
+
     function _evaluate(uint256 jobId, bytes memory optParams) internal {
         Expectation memory expectation = expectations[jobId];
         if (!expectation.configured) revert ExpectationNotConfigured();
 
         IPactCommerce.Job memory job = commerce.getJob(jobId);
-        if (job.deliverable == expectation.expectedDeliverable) {
+        bytes32 optParamsHash = keccak256(optParams);
+        bool optParamsHashMatched =
+            !expectation.requireOptParamsHash || optParamsHash == expectation.expectedOptParamsHash;
+        bool success = job.deliverable == expectation.expectedDeliverable && optParamsHashMatched;
+
+        delete expectations[jobId];
+        emit ExpectationCleared(jobId);
+
+        if (success) {
             commerce.complete(jobId, expectation.successAttestation, optParams);
             emit JobEvaluated(
-                jobId, true, job.deliverable, expectation.expectedDeliverable, expectation.successAttestation
+                jobId,
+                true,
+                job.deliverable,
+                expectation.expectedDeliverable,
+                expectation.successAttestation,
+                optParamsHash,
+                optParamsHashMatched
             );
             return;
         }
 
         commerce.reject(jobId, expectation.failureAttestation, optParams);
         emit JobEvaluated(
-            jobId, false, job.deliverable, expectation.expectedDeliverable, expectation.failureAttestation
+            jobId,
+            false,
+            job.deliverable,
+            expectation.expectedDeliverable,
+            expectation.failureAttestation,
+            optParamsHash,
+            optParamsHashMatched
         );
     }
 }
