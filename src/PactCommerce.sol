@@ -15,6 +15,7 @@ contract PactCommerce is IPactCommerce, Ownable, ReentrancyGuard {
     uint256 public constant HOOK_GAS_LIMIT = 500_000;
 
     bytes4 public constant SET_PROVIDER_SELECTOR = bytes4(keccak256("setProvider(uint256,address,bytes)"));
+    bytes4 public constant SET_EVALUATOR_SELECTOR = bytes4(keccak256("setEvaluator(uint256,address,bytes)"));
     bytes4 public constant SET_BUDGET_SELECTOR = bytes4(keccak256("setBudget(uint256,uint256,bytes)"));
     bytes4 public constant FUND_SELECTOR = bytes4(keccak256("fund(uint256,uint256,bytes)"));
     bytes4 public constant SUBMIT_SELECTOR = bytes4(keccak256("submit(uint256,bytes32,bytes)"));
@@ -39,6 +40,7 @@ contract PactCommerce is IPactCommerce, Ownable, ReentrancyGuard {
         string description
     );
     event ProviderSet(uint256 indexed jobId, address indexed provider);
+    event EvaluatorSet(uint256 indexed jobId, address indexed evaluator);
     event BudgetSet(uint256 indexed jobId, uint256 amount);
     event JobFunded(uint256 indexed jobId, address indexed client, uint256 amount);
     event JobSubmitted(uint256 indexed jobId, address indexed provider, bytes32 deliverable);
@@ -56,6 +58,7 @@ contract PactCommerce is IPactCommerce, Ownable, ReentrancyGuard {
     error UnauthorizedCaller();
     error ProviderAlreadySet();
     error ProviderRequired();
+    error EvaluatorRequired();
     error InvalidBudget();
     error BudgetMismatch();
     error JobNotExpired();
@@ -85,7 +88,6 @@ contract PactCommerce is IPactCommerce, Ownable, ReentrancyGuard {
         string calldata description,
         address hook
     ) public returns (uint256 jobId) {
-        if (evaluator == address(0)) revert ZeroAddress();
         if (expiredAt <= block.timestamp) revert InvalidExpiry();
 
         jobId = nextJobId;
@@ -131,6 +133,29 @@ contract PactCommerce is IPactCommerce, Ownable, ReentrancyGuard {
         _afterAction(job, jobId, SET_PROVIDER_SELECTOR, hookData);
     }
 
+    function setEvaluator(uint256 jobId, address evaluator) external {
+        _setEvaluator(jobId, evaluator, "");
+    }
+
+    function setEvaluator(uint256 jobId, address evaluator, bytes calldata optParams) public nonReentrant {
+        _setEvaluator(jobId, evaluator, optParams);
+    }
+
+    function _setEvaluator(uint256 jobId, address evaluator, bytes memory optParams) internal {
+        Job storage job = _getJob(jobId);
+        if (job.status != Status.Open) revert InvalidStatus();
+        if (msg.sender != job.client) revert UnauthorizedCaller();
+        if (evaluator == address(0)) revert ZeroAddress();
+
+        bytes memory hookData = abi.encode(evaluator, optParams);
+        _beforeAction(job, jobId, SET_EVALUATOR_SELECTOR, hookData);
+
+        job.evaluator = evaluator;
+
+        emit EvaluatorSet(jobId, evaluator);
+        _afterAction(job, jobId, SET_EVALUATOR_SELECTOR, hookData);
+    }
+
     function setBudget(uint256 jobId, uint256 amount) external {
         _setBudget(jobId, amount, "");
     }
@@ -166,6 +191,7 @@ contract PactCommerce is IPactCommerce, Ownable, ReentrancyGuard {
         if (job.status != Status.Open) revert InvalidStatus();
         if (msg.sender != job.client) revert UnauthorizedCaller();
         if (job.provider == address(0)) revert ProviderRequired();
+        if (job.evaluator == address(0)) revert EvaluatorRequired();
         if (job.budget == 0) revert InvalidBudget();
         if (job.budget != expectedBudget) revert BudgetMismatch();
 
