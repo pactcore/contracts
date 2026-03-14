@@ -158,9 +158,8 @@ contract PactGovernanceTest is Test {
         bytes32 resolution = keccak256("dao:dispute-resolution");
 
         vm.prank(alice);
-        uint256 proposalId = governance.createCommerceDisputeProposal(
-            address(commerce), 9, true, resolution, "dao resolves dispute"
-        );
+        uint256 proposalId =
+            governance.createCommerceDisputeProposal(address(commerce), 9, true, resolution, "dao resolves dispute");
 
         PactGovernance.Proposal memory proposal = governance.getProposal(proposalId);
         bytes memory expectedData = abi.encodeWithSelector(PactCommerce.resolveDispute.selector, 9, true, resolution);

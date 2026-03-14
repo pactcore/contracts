@@ -14,6 +14,8 @@ contract PactCommerce is IPactCommerce, Ownable, ReentrancyGuard {
 
     uint256 public constant HOOK_GAS_LIMIT = 500_000;
     uint256 public constant DEFAULT_DISPUTE_BOND_AMOUNT = 100e6;
+    uint16 public constant BPS_DENOMINATOR = 10_000;
+    uint16 public constant DEFAULT_UPHELD_DISPUTE_PENALTY_BPS = 1_000;
 
     bytes4 public constant SET_PROVIDER_SELECTOR = bytes4(keccak256("setProvider(uint256,address,bytes)"));
     bytes4 public constant SET_EVALUATOR_SELECTOR = bytes4(keccak256("setEvaluator(uint256,address,bytes)"));
@@ -26,6 +28,7 @@ contract PactCommerce is IPactCommerce, Ownable, ReentrancyGuard {
     IERC20 public immutable paymentToken;
     address public immutable treasury;
     uint16 public immutable platformFeeBps;
+    uint16 public immutable upheldDisputePenaltyBps;
     uint256 public immutable disputeBondAmount;
 
     uint256 private nextJobId = 1;
@@ -69,8 +72,11 @@ contract PactCommerce is IPactCommerce, Ownable, ReentrancyGuard {
         bool upheld,
         bytes32 resolution,
         address resolver,
-        address payoutRecipient,
-        uint256 payoutAmount
+        address juryRecipient,
+        address protocolRecipient,
+        uint256 challengerRefundAmount,
+        uint256 juryAmount,
+        uint256 protocolAmount
     );
 
     error ZeroAddress();
@@ -99,6 +105,7 @@ contract PactCommerce is IPactCommerce, Ownable, ReentrancyGuard {
         paymentToken = IERC20(paymentTokenAddress);
         treasury = treasuryAddress;
         platformFeeBps = feeBps;
+        upheldDisputePenaltyBps = DEFAULT_UPHELD_DISPUTE_PENALTY_BPS;
         disputeBondAmount = DEFAULT_DISPUTE_BOND_AMOUNT;
     }
 
@@ -367,11 +374,45 @@ contract PactCommerce is IPactCommerce, Ownable, ReentrancyGuard {
         dispute.status = upheld ? DisputeStatus.Upheld : DisputeStatus.Rejected;
         dispute.resolution = resolution;
 
-        address payoutRecipient = upheld ? dispute.challenger : owner();
-        uint256 payoutAmount = dispute.bondAmount;
-        paymentToken.safeTransfer(payoutRecipient, payoutAmount);
+        address juryRecipient = owner();
+        address protocolRecipient = treasury == address(0) ? juryRecipient : treasury;
+        uint256 challengerRefundAmount;
+        uint256 juryAmount;
+        uint256 protocolAmount;
 
-        emit DisputeResolved(disputeId, dispute.jobId, upheld, resolution, msg.sender, payoutRecipient, payoutAmount);
+        if (upheld) {
+            uint256 penaltyAmount = (dispute.bondAmount * upheldDisputePenaltyBps) / BPS_DENOMINATOR;
+            challengerRefundAmount = dispute.bondAmount - penaltyAmount;
+            juryAmount = penaltyAmount / 2;
+            protocolAmount = penaltyAmount - juryAmount;
+
+            if (challengerRefundAmount > 0) {
+                paymentToken.safeTransfer(dispute.challenger, challengerRefundAmount);
+            }
+        } else {
+            juryAmount = dispute.bondAmount / 2;
+            protocolAmount = dispute.bondAmount - juryAmount;
+        }
+
+        if (juryAmount > 0) {
+            paymentToken.safeTransfer(juryRecipient, juryAmount);
+        }
+        if (protocolAmount > 0) {
+            paymentToken.safeTransfer(protocolRecipient, protocolAmount);
+        }
+
+        emit DisputeResolved(
+            disputeId,
+            dispute.jobId,
+            upheld,
+            resolution,
+            msg.sender,
+            juryRecipient,
+            protocolRecipient,
+            challengerRefundAmount,
+            juryAmount,
+            protocolAmount
+        );
         job.attestation = resolution;
     }
 

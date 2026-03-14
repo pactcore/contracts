@@ -37,6 +37,7 @@ contract PactCommerceTest is Test {
     uint256 private constant BUDGET = 1_000e6;
     uint256 private constant DISPUTE_BOND = 100e6;
     uint16 private constant PLATFORM_FEE_BPS = 500;
+    uint16 private constant DISPUTE_UPHELD_PENALTY_BPS = 1_000;
     uint256 private constant MINIMUM_PROVIDER_SCORE = 80;
     uint64 private constant VOTING_DELAY = 1;
     uint64 private constant VOTING_PERIOD = 3 days;
@@ -782,12 +783,19 @@ contract PactCommerceTest is Test {
 
         commerce.resolveDispute(disputeId, true, resolution);
 
+        uint256 penaltyAmount = (DISPUTE_BOND * DISPUTE_UPHELD_PENALTY_BPS) / 10_000;
+        uint256 expectedRefund = DISPUTE_BOND - penaltyAmount;
+        uint256 expectedJury = penaltyAmount / 2;
+        uint256 expectedProtocol = penaltyAmount - expectedJury;
+
         IPactCommerce.Dispute memory dispute = commerce.getDispute(disputeId);
         IPactCommerce.Job memory job = commerce.getJob(jobId);
         assertEq(uint8(dispute.status), uint8(IPactCommerce.DisputeStatus.Upheld));
         assertEq(dispute.resolution, resolution);
         assertEq(job.attestation, resolution);
-        assertEq(usdc.balanceOf(outsider), INITIAL_BALANCE);
+        assertEq(usdc.balanceOf(outsider), INITIAL_BALANCE - DISPUTE_BOND + expectedRefund);
+        assertEq(usdc.balanceOf(address(this)), expectedJury);
+        assertEq(usdc.balanceOf(treasury), ((BUDGET * PLATFORM_FEE_BPS) / 10_000) + expectedProtocol);
         assertEq(usdc.balanceOf(address(commerce)), 0);
     }
 
@@ -806,10 +814,14 @@ contract PactCommerceTest is Test {
 
         commerce.resolveDispute(disputeId, false, resolution);
 
+        uint256 expectedJury = DISPUTE_BOND / 2;
+        uint256 expectedProtocol = DISPUTE_BOND - expectedJury;
+
         IPactCommerce.Dispute memory dispute = commerce.getDispute(disputeId);
         assertEq(uint8(dispute.status), uint8(IPactCommerce.DisputeStatus.Rejected));
         assertEq(dispute.resolution, resolution);
-        assertEq(usdc.balanceOf(address(this)), DISPUTE_BOND);
+        assertEq(usdc.balanceOf(address(this)), expectedJury);
+        assertEq(usdc.balanceOf(treasury), expectedProtocol);
         assertEq(usdc.balanceOf(address(commerce)), 0);
     }
 
@@ -881,12 +893,19 @@ contract PactCommerceTest is Test {
         uint256 proposalId = _createGovernanceDisputeProposal(disputeId, true, resolution);
         _voteForAndExecuteProposal(proposalId);
 
+        uint256 penaltyAmount = (DISPUTE_BOND * DISPUTE_UPHELD_PENALTY_BPS) / 10_000;
+        uint256 expectedRefund = DISPUTE_BOND - penaltyAmount;
+        uint256 expectedJury = penaltyAmount / 2;
+        uint256 expectedProtocol = penaltyAmount - expectedJury;
+
         IPactCommerce.Dispute memory dispute = commerce.getDispute(disputeId);
         IPactCommerce.Job memory job = commerce.getJob(jobId);
         assertEq(uint8(dispute.status), uint8(IPactCommerce.DisputeStatus.Upheld));
         assertEq(dispute.resolution, resolution);
         assertEq(job.attestation, resolution);
-        assertEq(usdc.balanceOf(outsider), INITIAL_BALANCE);
+        assertEq(usdc.balanceOf(outsider), INITIAL_BALANCE - DISPUTE_BOND + expectedRefund);
+        assertEq(usdc.balanceOf(address(governance)), expectedJury);
+        assertEq(usdc.balanceOf(treasury), ((BUDGET * PLATFORM_FEE_BPS) / 10_000) + expectedProtocol);
         assertEq(usdc.balanceOf(address(commerce)), 0);
     }
 

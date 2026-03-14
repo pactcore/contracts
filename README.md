@@ -36,7 +36,7 @@ Purpose:
 - Implements the ERC-8183 job lifecycle: `Open -> Funded -> Submitted -> Terminal`.
 - Escrows a single ERC-20 payment token per contract and settles deterministically.
 - Supports optional platform fee payout to a treasury on completion only.
-- Adds a dispute bond lane for terminal jobs so jury/governance review can be modeled without reopening escrow state.
+- Adds a dispute bond lane for terminal jobs so jury/governance review can be modeled without reopening escrow state, including challenger slashing splits for upheld vs. rejected disputes.
 - Stores onchain job records: description, deliverable reference, evaluator attestation, and terminal status.
 - Allows evaluator assignment or replacement while a job remains `Open`, including jobs created without an evaluator.
 - Exposes the standard hook surface around `setProvider`, `setEvaluator`, `setBudget`, `fund`, `submit`, `complete`, and `reject`.
@@ -48,7 +48,7 @@ Roles:
 - `provider`: sets or negotiates budget and submits the deliverable reference.
 - `evaluator`: a single address that may reject while `Funded`, and complete or reject while `Submitted`.
 - `challenger`: posts the fixed dispute bond to escalate a terminal job into jury / governance review.
-- `owner`: resolves disputes and routes the bond back to the challenger when upheld or keeps it when rejected.
+- `owner`: resolves disputes and routes the bond into challenger refund plus jury/protocol allocations instead of reopening escrow settlement.
 
 Core lifecycle:
 1. `createJob(provider, evaluator, expiredAt, description, hook)`
@@ -59,7 +59,7 @@ Core lifecycle:
 6. `submit(jobId, deliverable, optParams)`
 7. `complete(jobId, reason, optParams)` or `reject(jobId, reason, optParams)`
 8. `raiseDispute(jobId, subjectType, subjectRef, evidenceHash, expectedBondAmount)` for terminal-state jury escalation
-9. `resolveDispute(disputeId, upheld, resolution)` by the contract owner / governance authority
+9. `resolveDispute(disputeId, upheld, resolution)` by the contract owner / governance authority, applying the dispute-bond slashing split in-place
 10. `claimRefund(jobId)` after expiry from `Funded` or `Submitted`
 
 Events:
@@ -146,7 +146,7 @@ The rest of the repository remains unchanged:
 - evaluator rejection from `Funded` and `Submitted`
 - human-judge completion with the client acting as evaluator
 - governance-evaluator completion and rejection after DAO proposal execution
-- governance-authored dispute resolution after commerce ownership is delegated to the DAO
+- governance-authored dispute resolution after commerce ownership is delegated to the DAO, including jury/protocol bond splits
 - client rejection from `Open`
 - expiry reclaim
 - payout previewing for frontends and settlement UX
