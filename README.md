@@ -116,6 +116,18 @@ Purpose:
 
 This is the PACT path for zk-proof verifiers, receipts, or other deterministic validation contracts. Human judges, multisigs, and DAOs fit the same surface by simply being the `evaluator` address on a job.
 
+### Committee Evaluator
+File: `src/evaluators/CommitteeReviewEvaluator.sol`
+
+Purpose:
+- Adds an ERC-8183-compatible evaluator contract for Layer-2 agent-validator review instead of a single judge address.
+- Lets validators stake the settlement token, cast `Approve` / `Reject` / `Uncertain` votes, and resolve a submitted job once an approval or rejection threshold is met.
+- Routes the validator settlement share into the evaluator contract, then accrues that reward only to validators who aligned with the final committee outcome.
+- Tracks consecutive deviations from the final outcome and slashes validator stake after a configurable number of disagreements, matching the whitepaper's validator-game direction more closely than the single-evaluator path.
+- Can optionally bind votes to the hash of opaque evaluator `optParams`, so receipt bundles or evidence payloads stay hash-checked all the way into settlement.
+
+This is the PACT path for multi-agent validator committees: a job still exposes a single ERC-8183 `evaluator` address, but that address can now encapsulate quorum voting, reward routing, and slashing semantics internally.
+
 ### Governance Evaluator
 Files:
 - `src/evaluators/GovernanceReviewEvaluator.sol`
@@ -156,6 +168,8 @@ The rest of the repository remains unchanged:
 - hook enforcement, callback recording, provider-score verification telemetry, evaluator allowlist enforcement, and combined counterparty policy enforcement
 - rollback when an `afterAction` policy hook rejects settlement
 - deterministic evaluator completion and rejection paths, including forwarded opaque evaluation params, hash-bound proof bundle checks, and one-shot expectation consumption
+
+`test/CommitteeReviewEvaluator.t.sol` covers committee approval and rejection flows, reward splitting across aligned validators, opt-params hash binding, and slashing after three consecutive deviations.
 
 `test/PactGovernance.t.sol` also covers governance-authored ERC-8183 decision and dispute proposals and verifies the encoded call target/data for both helper paths.
 
