@@ -13,6 +13,7 @@ contract PactCommerce is IPactCommerce, Ownable, ReentrancyGuard {
     using SafeERC20 for IERC20;
 
     uint256 public constant HOOK_GAS_LIMIT = 500_000;
+    uint256 public constant DEFAULT_DISPUTE_BOND_AMOUNT = 100e6;
 
     bytes4 public constant SET_PROVIDER_SELECTOR = bytes4(keccak256("setProvider(uint256,address,bytes)"));
     bytes4 public constant SET_EVALUATOR_SELECTOR = bytes4(keccak256("setEvaluator(uint256,address,bytes)"));
@@ -25,10 +26,14 @@ contract PactCommerce is IPactCommerce, Ownable, ReentrancyGuard {
     IERC20 public immutable paymentToken;
     address public immutable treasury;
     uint16 public immutable platformFeeBps;
+    uint256 public immutable disputeBondAmount;
 
     uint256 private nextJobId = 1;
+    uint256 private nextDisputeId = 1;
 
     mapping(uint256 jobId => Job) private jobs;
+    mapping(uint256 disputeId => Dispute) private disputes;
+    mapping(uint256 jobId => uint256 disputeId) private disputeForJob;
 
     event JobCreated(
         uint256 indexed jobId,
@@ -49,6 +54,24 @@ contract PactCommerce is IPactCommerce, Ownable, ReentrancyGuard {
     event JobExpired(uint256 indexed jobId);
     event PaymentReleased(uint256 indexed jobId, address indexed provider, uint256 amount, uint256 feeAmount);
     event Refunded(uint256 indexed jobId, address indexed client, uint256 amount);
+    event DisputeRaised(
+        uint256 indexed disputeId,
+        uint256 indexed jobId,
+        address indexed challenger,
+        bytes32 subjectType,
+        bytes32 subjectRef,
+        bytes32 evidenceHash,
+        uint256 bondAmount
+    );
+    event DisputeResolved(
+        uint256 indexed disputeId,
+        uint256 indexed jobId,
+        bool upheld,
+        bytes32 resolution,
+        address resolver,
+        address payoutRecipient,
+        uint256 payoutAmount
+    );
 
     error ZeroAddress();
     error InvalidExpiry();
@@ -63,6 +86,10 @@ contract PactCommerce is IPactCommerce, Ownable, ReentrancyGuard {
     error BudgetMismatch();
     error JobNotExpired();
     error HookCallFailed(address hook, bytes4 selector, bool beforePhase);
+    error DisputeNotFound();
+    error DisputeAlreadyExists();
+    error DisputeNotOpen();
+    error InvalidDisputeBond();
 
     constructor(address paymentTokenAddress, address treasuryAddress, uint16 feeBps) Ownable(msg.sender) {
         if (paymentTokenAddress == address(0)) revert ZeroAddress();
@@ -72,6 +99,7 @@ contract PactCommerce is IPactCommerce, Ownable, ReentrancyGuard {
         paymentToken = IERC20(paymentTokenAddress);
         treasury = treasuryAddress;
         platformFeeBps = feeBps;
+        disputeBondAmount = DEFAULT_DISPUTE_BOND_AMOUNT;
     }
 
     function createJob(address provider, address evaluator, uint256 expiredAt, string calldata description)
@@ -294,6 +322,59 @@ contract PactCommerce is IPactCommerce, Ownable, ReentrancyGuard {
         _afterAction(job, jobId, REJECT_SELECTOR, hookData);
     }
 
+    function raiseDispute(
+        uint256 jobId,
+        bytes32 subjectType,
+        bytes32 subjectRef,
+        bytes32 evidenceHash,
+        uint256 expectedBondAmount
+    ) external nonReentrant returns (uint256 disputeId) {
+        Job storage job = _getJob(jobId);
+        if (job.status != Status.Completed && job.status != Status.Rejected && job.status != Status.Expired) {
+            revert InvalidStatus();
+        }
+        if (disputeForJob[jobId] != 0) revert DisputeAlreadyExists();
+        if (expectedBondAmount != disputeBondAmount) revert InvalidDisputeBond();
+
+        disputeId = nextDisputeId;
+        nextDisputeId++;
+
+        disputes[disputeId] = Dispute({
+            jobId: jobId,
+            challenger: msg.sender,
+            subjectType: subjectType,
+            subjectRef: subjectRef,
+            evidenceHash: evidenceHash,
+            bondAmount: expectedBondAmount,
+            status: DisputeStatus.Open,
+            resolution: bytes32(0)
+        });
+        disputeForJob[jobId] = disputeId;
+
+        paymentToken.safeTransferFrom(msg.sender, address(this), expectedBondAmount);
+
+        emit DisputeRaised(disputeId, jobId, msg.sender, subjectType, subjectRef, evidenceHash, expectedBondAmount);
+    }
+
+    function resolveDispute(uint256 disputeId, bool upheld, bytes32 resolution) external nonReentrant {
+        if (msg.sender != owner()) revert UnauthorizedCaller();
+
+        Dispute storage dispute = _getDispute(disputeId);
+        if (dispute.status != DisputeStatus.Open) revert DisputeNotOpen();
+
+        Job storage job = _getJob(dispute.jobId);
+
+        dispute.status = upheld ? DisputeStatus.Upheld : DisputeStatus.Rejected;
+        dispute.resolution = resolution;
+
+        address payoutRecipient = upheld ? dispute.challenger : owner();
+        uint256 payoutAmount = dispute.bondAmount;
+        paymentToken.safeTransfer(payoutRecipient, payoutAmount);
+
+        emit DisputeResolved(disputeId, dispute.jobId, upheld, resolution, msg.sender, payoutRecipient, payoutAmount);
+        job.attestation = resolution;
+    }
+
     function claimRefund(uint256 jobId) external nonReentrant {
         Job storage job = _getJob(jobId);
         if (job.status != Status.Funded && job.status != Status.Submitted) revert InvalidStatus();
@@ -311,8 +392,22 @@ contract PactCommerce is IPactCommerce, Ownable, ReentrancyGuard {
         return job;
     }
 
+    function getDispute(uint256 disputeId) external view returns (Dispute memory) {
+        Dispute storage dispute = _getDispute(disputeId);
+        return dispute;
+    }
+
+    function getDisputeForJob(uint256 jobId) external view returns (uint256 disputeId) {
+        _getJob(jobId);
+        return disputeForJob[jobId];
+    }
+
     function getNextJobId() external view returns (uint256) {
         return nextJobId;
+    }
+
+    function getNextDisputeId() external view returns (uint256) {
+        return nextDisputeId;
     }
 
     function previewPayout(uint256 jobId) external view returns (uint256 providerAmount, uint256 feeAmount) {
@@ -350,5 +445,10 @@ contract PactCommerce is IPactCommerce, Ownable, ReentrancyGuard {
     function _getJob(uint256 jobId) internal view returns (Job storage job) {
         job = jobs[jobId];
         if (job.client == address(0)) revert JobNotFound();
+    }
+
+    function _getDispute(uint256 disputeId) internal view returns (Dispute storage dispute) {
+        dispute = disputes[disputeId];
+        if (dispute.challenger == address(0)) revert DisputeNotFound();
     }
 }

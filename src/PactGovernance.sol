@@ -6,6 +6,7 @@ import {Ownable} from "openzeppelin-contracts/contracts/access/Ownable.sol";
 import {ReentrancyGuard} from "openzeppelin-contracts/contracts/utils/ReentrancyGuard.sol";
 
 import {IGovernanceEvaluator} from "./interfaces/IGovernanceEvaluator.sol";
+import {IPactCommerce} from "./interfaces/IPactCommerce.sol";
 
 contract PactGovernance is Ownable, ReentrancyGuard {
     enum ProposalState {
@@ -106,6 +107,17 @@ contract PactGovernance is Ownable, ReentrancyGuard {
     ) external returns (uint256 proposalId) {
         bytes memory data = abi.encodeCall(IGovernanceEvaluator.executeDecision, (jobId, approve, reason, optParams));
         proposalId = _createProposal(evaluator, 0, data, description);
+    }
+
+    function createCommerceDisputeProposal(
+        address commerceTarget,
+        uint256 disputeId,
+        bool upheld,
+        bytes32 resolution,
+        string calldata description
+    ) external returns (uint256 proposalId) {
+        bytes memory data = abi.encodeCall(IPactCommerce.resolveDispute, (disputeId, upheld, resolution));
+        proposalId = _createProposal(commerceTarget, 0, data, description);
     }
 
     function _createProposal(address target, uint256 value, bytes memory data, string calldata description)
