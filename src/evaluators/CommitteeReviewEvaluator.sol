@@ -23,6 +23,7 @@ contract CommitteeReviewEvaluator is IEvaluatorSettlementRecipient, Ownable, Ree
         uint256 stake;
         uint256 accruedRewards;
         uint8 consecutiveDeviations;
+        uint32 pendingAccountings;
         bool active;
     }
 
@@ -42,15 +43,26 @@ contract CommitteeReviewEvaluator is IEvaluatorSettlementRecipient, Ownable, Ree
         uint32 uncertainCount;
     }
 
+    struct JobResolution {
+        VoteChoice committeeOutcome;
+        bytes32 attestation;
+        bytes32 optParamsHash;
+        uint64 resolvedAt;
+        uint256 rewardAmount;
+        bool accountingFinalized;
+    }
+
     IPactCommerce public immutable commerce;
     IERC20 public immutable settlementToken;
     address public immutable slashRecipient;
     uint256 public immutable minimumStake;
+    uint256 public immutable disputeWindow;
     uint16 public immutable slashingBps;
     uint8 public immutable slashAfterDisagreements;
 
     mapping(address validator => ValidatorAccount) public validators;
     mapping(uint256 jobId => JobConfig) public jobConfigs;
+    mapping(uint256 jobId => JobResolution) public jobResolutions;
     mapping(uint256 jobId => VoteTally) public tallies;
     mapping(uint256 jobId => mapping(address validator => VoteChoice choice)) public votes;
     mapping(uint256 jobId => address[]) private jobVoters;
@@ -84,6 +96,14 @@ contract CommitteeReviewEvaluator is IEvaluatorSettlementRecipient, Ownable, Ree
         uint256 alignedValidatorCount,
         bytes32 optParamsHash
     );
+    event JobAccountingFinalized(
+        uint256 indexed jobId,
+        VoteChoice indexed finalOutcome,
+        bool disputed,
+        uint256 rewardAmount,
+        uint256 alignedValidatorCount,
+        bytes32 resolution
+    );
     event ValidatorSlashed(
         uint256 indexed jobId,
         address indexed validator,
@@ -104,17 +124,23 @@ contract CommitteeReviewEvaluator is IEvaluatorSettlementRecipient, Ownable, Ree
     error InvalidAmount();
     error ValidatorInactive();
     error InsufficientStake();
+    error PendingAccounting(uint256 pendingAccountings);
     error JobNotConfigured();
     error JobAlreadyResolved();
+    error JobNotResolved();
+    error JobAccountingAlreadyFinalized();
+    error JobAccountingNotReady();
     error InvalidVote();
     error AlreadyVoted();
     error InvalidJobStatus();
     error InvalidOptParamsHash(bytes32 actual, bytes32 expected);
+    error UnknownDisputeOutcome(bytes32 resolution);
 
     constructor(
         address commerceAddress,
         address settlementTokenAddress,
         uint256 minimumStakeAmount,
+        uint256 disputeWindowSeconds,
         uint16 slashingBpsValue,
         uint8 slashAfterDisagreementsValue,
         address slashRecipientAddress
@@ -125,8 +151,8 @@ contract CommitteeReviewEvaluator is IEvaluatorSettlementRecipient, Ownable, Ree
             revert ZeroAddress();
         }
         if (
-            minimumStakeAmount == 0 || slashingBpsValue == 0 || slashingBpsValue > 10_000
-                || slashAfterDisagreementsValue == 0
+            minimumStakeAmount == 0 || disputeWindowSeconds == 0 || slashingBpsValue == 0
+                || slashingBpsValue > 10_000 || slashAfterDisagreementsValue == 0
         ) {
             revert InvalidConfig();
         }
@@ -134,6 +160,7 @@ contract CommitteeReviewEvaluator is IEvaluatorSettlementRecipient, Ownable, Ree
         commerce = IPactCommerce(commerceAddress);
         settlementToken = IERC20(settlementTokenAddress);
         minimumStake = minimumStakeAmount;
+        disputeWindow = disputeWindowSeconds;
         slashingBps = slashingBpsValue;
         slashAfterDisagreements = slashAfterDisagreementsValue;
         slashRecipient = slashRecipientAddress;
@@ -155,6 +182,7 @@ contract CommitteeReviewEvaluator is IEvaluatorSettlementRecipient, Ownable, Ree
         if (amount == 0) revert InvalidAmount();
 
         ValidatorAccount storage validator = validators[msg.sender];
+        if (validator.pendingAccountings != 0) revert PendingAccounting(validator.pendingAccountings);
         if (amount > validator.stake) revert InsufficientStake();
 
         validator.stake -= amount;
@@ -214,6 +242,32 @@ contract CommitteeReviewEvaluator is IEvaluatorSettlementRecipient, Ownable, Ree
         _castVote(jobId, choice, optParams);
     }
 
+    function finalizeJobAccounting(uint256 jobId) external nonReentrant {
+        JobResolution storage resolution = jobResolutions[jobId];
+        if (resolution.resolvedAt == 0) revert JobNotResolved();
+        if (resolution.accountingFinalized) revert JobAccountingAlreadyFinalized();
+
+        (VoteChoice finalOutcome, bytes32 finalResolution, bool disputed) = _resolveFinalOutcome(jobId, resolution);
+
+        resolution.accountingFinalized = true;
+
+        uint256 alignedValidatorCount = _settleValidatorAccounting(jobId, finalOutcome);
+        _releasePendingAccountings(jobId);
+
+        uint256 rewardAmount = resolution.rewardAmount;
+        if (rewardAmount > 0) {
+            if (alignedValidatorCount > 0) {
+                _allocateRewards(jobId, finalOutcome, rewardAmount, alignedValidatorCount);
+            } else {
+                settlementToken.safeTransfer(slashRecipient, rewardAmount);
+            }
+        }
+
+        emit JobAccountingFinalized(
+            jobId, finalOutcome, disputed, rewardAmount, alignedValidatorCount, finalResolution
+        );
+    }
+
     function getVoters(uint256 jobId) external view returns (address[] memory) {
         return jobVoters[jobId];
     }
@@ -233,12 +287,21 @@ contract CommitteeReviewEvaluator is IEvaluatorSettlementRecipient, Ownable, Ree
     ) internal {
         if (approvalThreshold == 0 || rejectionThreshold == 0) revert InvalidConfig();
 
+        JobConfig storage config = jobConfigs[jobId];
+        if (config.resolved) revert JobAlreadyResolved();
+
         address[] storage votersForJob = jobVoters[jobId];
         for (uint256 i = 0; i < votersForJob.length; ++i) {
-            delete votes[jobId][votersForJob[i]];
+            address validatorAddress = votersForJob[i];
+            if (votes[jobId][validatorAddress] != VoteChoice.None) {
+                ValidatorAccount storage validator = validators[validatorAddress];
+                if (validator.pendingAccountings > 0) {
+                    validator.pendingAccountings -= 1;
+                }
+                delete votes[jobId][validatorAddress];
+            }
         }
 
-        JobConfig storage config = jobConfigs[jobId];
         config.successAttestation = successAttestation;
         config.failureAttestation = failureAttestation;
         config.expectedOptParamsHash = expectedOptParamsHash;
@@ -249,6 +312,7 @@ contract CommitteeReviewEvaluator is IEvaluatorSettlementRecipient, Ownable, Ree
 
         delete tallies[jobId];
         delete jobVoters[jobId];
+        delete jobResolutions[jobId];
 
         emit JobConfigured(
             jobId,
@@ -282,6 +346,7 @@ contract CommitteeReviewEvaluator is IEvaluatorSettlementRecipient, Ownable, Ree
 
         votes[jobId][msg.sender] = choice;
         jobVoters[jobId].push(msg.sender);
+        validator.pendingAccountings += 1;
 
         VoteTally storage tally = tallies[jobId];
         if (choice == VoteChoice.Approve) {
@@ -322,13 +387,49 @@ contract CommitteeReviewEvaluator is IEvaluatorSettlementRecipient, Ownable, Ree
             commerce.reject(jobId, attestation, optParams);
         }
         uint256 rewardAmount = settlementToken.balanceOf(address(this)) - balanceBefore;
-        uint256 alignedValidatorCount = _settleValidatorAccounting(jobId, outcome);
 
-        if (rewardAmount > 0 && alignedValidatorCount > 0) {
-            _allocateRewards(jobId, outcome, rewardAmount, alignedValidatorCount);
+        jobResolutions[jobId] = JobResolution({
+            committeeOutcome: outcome,
+            attestation: attestation,
+            optParamsHash: optParamsHash,
+            resolvedAt: uint64(block.timestamp),
+            rewardAmount: rewardAmount,
+            accountingFinalized: false
+        });
+
+        emit JobResolved(jobId, outcome, attestation, rewardAmount, 0, optParamsHash);
+    }
+
+    function _resolveFinalOutcome(uint256 jobId, JobResolution storage resolution)
+        internal
+        view
+        returns (VoteChoice finalOutcome, bytes32 finalResolution, bool disputed)
+    {
+        uint256 disputeId = commerce.getDisputeForJob(jobId);
+        if (disputeId == 0) {
+            if (block.timestamp < uint256(resolution.resolvedAt) + disputeWindow) {
+                revert JobAccountingNotReady();
+            }
+
+            return (resolution.committeeOutcome, resolution.attestation, false);
         }
 
-        emit JobResolved(jobId, outcome, attestation, rewardAmount, alignedValidatorCount, optParamsHash);
+        IPactCommerce.Dispute memory dispute = commerce.getDispute(disputeId);
+        if (dispute.status == IPactCommerce.DisputeStatus.Open) revert JobAccountingNotReady();
+
+        if (dispute.status == IPactCommerce.DisputeStatus.Rejected) {
+            return (resolution.committeeOutcome, resolution.attestation, true);
+        }
+
+        JobConfig storage config = jobConfigs[jobId];
+        if (dispute.resolution == config.successAttestation) {
+            return (VoteChoice.Approve, dispute.resolution, true);
+        }
+        if (dispute.resolution == config.failureAttestation) {
+            return (VoteChoice.Reject, dispute.resolution, true);
+        }
+
+        revert UnknownDisputeOutcome(dispute.resolution);
     }
 
     function _settleValidatorAccounting(uint256 jobId, VoteChoice outcome)
@@ -370,6 +471,18 @@ contract CommitteeReviewEvaluator is IEvaluatorSettlementRecipient, Ownable, Ree
             settlementToken.safeTransfer(slashRecipient, slashAmount);
 
             emit ValidatorSlashed(jobId, validatorAddress, slashAmount, slashAfterDisagreements, outcome);
+        }
+    }
+
+    function _releasePendingAccountings(uint256 jobId) internal {
+        address[] storage votersForJob = jobVoters[jobId];
+        uint256 voterCount = votersForJob.length;
+
+        for (uint256 i = 0; i < voterCount; ++i) {
+            ValidatorAccount storage validator = validators[votersForJob[i]];
+            if (validator.pendingAccountings > 0) {
+                validator.pendingAccountings -= 1;
+            }
         }
     }
 

@@ -122,11 +122,12 @@ File: `src/evaluators/CommitteeReviewEvaluator.sol`
 Purpose:
 - Adds an ERC-8183-compatible evaluator contract for Layer-2 agent-validator review instead of a single judge address.
 - Lets validators stake the settlement token, cast `Approve` / `Reject` / `Uncertain` votes, and resolve a submitted job once an approval or rejection threshold is met.
-- Routes the validator settlement share into the evaluator contract, then accrues that reward only to validators who aligned with the final committee outcome.
-- Tracks consecutive deviations from the final outcome and slashes validator stake after a configurable number of disagreements, matching the whitepaper's validator-game direction more closely than the single-evaluator path.
+- Routes the validator settlement share into the evaluator contract, then finalizes validator rewards only after either the committee dispute window expires or a terminal `raiseDispute(...)` challenge is resolved.
+- Tracks consecutive deviations from the final committee-or-jury outcome and slashes validator stake after a configurable number of disagreements, so jury/governance review can override committee-majority accounting instead of merely annotating it.
+- Locks validator unstaking while they still have unresolved committee jobs, preserving slashable stake until the whitepaper-style appeal lane finishes.
 - Can optionally bind votes to the hash of opaque evaluator `optParams`, so receipt bundles or evidence payloads stay hash-checked all the way into settlement.
 
-This is the PACT path for multi-agent validator committees: a job still exposes a single ERC-8183 `evaluator` address, but that address can now encapsulate quorum voting, reward routing, and slashing semantics internally.
+This is the PACT path for multi-agent validator committees: a job still exposes a single ERC-8183 `evaluator` address, but that address can now encapsulate quorum voting, reward routing, dispute-aware accounting, and slashing semantics internally.
 
 ### Governance Evaluator
 Files:
@@ -169,7 +170,7 @@ The rest of the repository remains unchanged:
 - rollback when an `afterAction` policy hook rejects settlement
 - deterministic evaluator completion and rejection paths, including forwarded opaque evaluation params, hash-bound proof bundle checks, and one-shot expectation consumption
 
-`test/CommitteeReviewEvaluator.t.sol` covers committee approval and rejection flows, reward splitting across aligned validators, opt-params hash binding, and slashing after three consecutive deviations.
+`test/CommitteeReviewEvaluator.t.sol` covers committee approval and rejection flows, dispute-window gating, jury/dispute overrides of validator accounting, reward splitting across aligned validators, opt-params hash binding, and slashing after three consecutive deviations.
 
 `test/PactGovernance.t.sol` also covers governance-authored ERC-8183 decision and dispute proposals and verifies the encoded call target/data for both helper paths.
 
