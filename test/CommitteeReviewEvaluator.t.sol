@@ -179,7 +179,7 @@ contract CommitteeReviewEvaluatorTest is Test {
             committeeEvaluator.finalizeJobAccounting(jobId);
         }
 
-        uint256 treasuryFees = ((BUDGET * PLATFORM_FEE_BPS) / 10_000) * 3;
+        uint256 treasuryFees = (BUDGET * PLATFORM_FEE_BPS * 3) / 10_000;
         assertEq(usdc.balanceOf(treasury), treasuryBefore + treasuryFees + slashAmount);
 
         _assertValidatorAccount(validatorC, MINIMUM_STAKE - slashAmount, 0, 0, 0, false);
@@ -213,10 +213,13 @@ contract CommitteeReviewEvaluatorTest is Test {
         vm.prank(validatorC);
         committeeEvaluator.unstake(1);
 
+        uint256 disputeBond = commerce.disputeBondAmount();
+        uint256 challengerBalanceBefore = usdc.balanceOf(challenger);
+        uint256 treasuryBalanceBefore = usdc.balanceOf(treasury);
+
         vm.prank(challenger);
-        uint256 disputeId = commerce.raiseDispute(
-            jobId, disputeSubjectType, disputeSubjectRef, disputeEvidence, commerce.disputeBondAmount()
-        );
+        uint256 disputeId =
+            commerce.raiseDispute(jobId, disputeSubjectType, disputeSubjectRef, disputeEvidence, disputeBond);
 
         vm.expectRevert(abi.encodeWithSelector(CommitteeReviewEvaluator.JobAccountingNotReady.selector));
         committeeEvaluator.finalizeJobAccounting(jobId);
@@ -227,6 +230,11 @@ contract CommitteeReviewEvaluatorTest is Test {
         IPactCommerce.Dispute memory dispute = commerce.getDispute(disputeId);
         assertEq(uint8(dispute.status), uint8(IPactCommerce.DisputeStatus.Upheld));
         assertEq(dispute.resolution, failureAttestation);
+        assertEq(usdc.balanceOf(challenger), challengerBalanceBefore - (disputeBond / 10));
+        assertEq(usdc.balanceOf(treasury), treasuryBalanceBefore + (disputeBond / 20));
+
+        IPactCommerce.Job memory job = commerce.getJob(jobId);
+        assertEq(job.attestation, failureAttestation);
 
         _assertValidatorAccount(validatorA, MINIMUM_STAKE, 0, 1, 0, true);
         _assertValidatorAccount(validatorB, MINIMUM_STAKE, 0, 1, 0, true);
