@@ -36,7 +36,7 @@ Purpose:
 - Implements the ERC-8183 job lifecycle: `Open -> Funded -> Submitted -> Terminal`.
 - Escrows a single ERC-20 payment token per contract and settles deterministically.
 - Settles completions with the legacy PACT economics split: provider / validator / treasury / issuer = 85 / 5 / 5 / 5 by default when treasury fee is configured to 5%.
-- Adds a dispute bond lane for terminal jobs so jury/governance review can be modeled without reopening escrow state, including challenger slashing splits for upheld vs. rejected disputes.
+- Adds a dispute bond lane for terminal jobs so jury/governance review can be modeled without reopening escrow state, including challenger slashing splits for upheld vs. rejected disputes and explicit terminal-status overrides for upheld appeals.
 - Stores onchain job records: description, deliverable reference, evaluator attestation, and terminal status.
 - Allows evaluator assignment or replacement while a job remains `Open`, including jobs created without an evaluator.
 - Exposes the standard hook surface around `setProvider`, `setEvaluator`, `setBudget`, `fund`, `submit`, `complete`, and `reject`.
@@ -48,7 +48,7 @@ Roles:
 - `provider`: sets or negotiates budget and submits the deliverable reference.
 - `evaluator`: a single address that may reject while `Funded`, and complete or reject while `Submitted`; if it implements `settlementRecipient()`, the validator share routes there instead of to the evaluator address itself.
 - `challenger`: posts the fixed dispute bond to escalate a terminal job into jury / governance review.
-- `owner`: resolves disputes and routes the bond into challenger refund plus jury/protocol allocations instead of reopening escrow settlement.
+- `owner`: resolves disputes and routes the bond into challenger refund plus jury/protocol allocations while explicitly setting the final terminal job status for upheld appeals instead of reopening escrow settlement.
 
 Core lifecycle:
 1. `createJob(provider, evaluator, expiredAt, description, hook)`
@@ -59,7 +59,7 @@ Core lifecycle:
 6. `submit(jobId, deliverable, optParams)`
 7. `complete(jobId, reason, optParams)` or `reject(jobId, reason, optParams)`
 8. `raiseDispute(jobId, subjectType, subjectRef, evidenceHash, expectedBondAmount)` for terminal-state jury escalation
-9. `resolveDispute(disputeId, upheld, resolution)` by the contract owner / governance authority, applying the dispute-bond slashing split in-place
+9. `resolveDispute(disputeId, upheld, finalStatus, resolution)` by the contract owner / governance authority, applying the dispute-bond slashing split in-place and updating the final terminal job status for upheld appeals
 10. `claimRefund(jobId)` after expiry from `Funded` or `Submitted`
 
 Events:

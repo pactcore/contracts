@@ -821,7 +821,7 @@ contract PactCommerceTest is Test {
             jobId, keccak256("settlement"), keccak256("receipt://2"), keccak256("evidence://jury"), DISPUTE_BOND
         );
 
-        commerce.resolveDispute(disputeId, true, resolution);
+        commerce.resolveDispute(disputeId, true, IPactCommerce.Status.Rejected, resolution);
 
         uint256 penaltyAmount = (DISPUTE_BOND * DISPUTE_UPHELD_PENALTY_BPS) / 10_000;
         uint256 expectedRefund = DISPUTE_BOND - penaltyAmount;
@@ -832,6 +832,7 @@ contract PactCommerceTest is Test {
         IPactCommerce.Job memory job = commerce.getJob(jobId);
         assertEq(uint8(dispute.status), uint8(IPactCommerce.DisputeStatus.Upheld));
         assertEq(dispute.resolution, resolution);
+        assertEq(uint8(job.status), uint8(IPactCommerce.Status.Rejected));
         assertEq(job.attestation, resolution);
         assertEq(usdc.balanceOf(outsider), INITIAL_BALANCE - DISPUTE_BOND + expectedRefund);
         assertEq(usdc.balanceOf(address(this)), expectedJury);
@@ -852,17 +853,42 @@ contract PactCommerceTest is Test {
             jobId, keccak256("rejection"), keccak256("decision://1"), keccak256("evidence://appeal"), DISPUTE_BOND
         );
 
-        commerce.resolveDispute(disputeId, false, resolution);
+        commerce.resolveDispute(disputeId, false, IPactCommerce.Status.Completed, resolution);
 
         uint256 expectedJury = DISPUTE_BOND / 2;
         uint256 expectedProtocol = DISPUTE_BOND - expectedJury;
 
         IPactCommerce.Dispute memory dispute = commerce.getDispute(disputeId);
+        IPactCommerce.Job memory job = commerce.getJob(jobId);
         assertEq(uint8(dispute.status), uint8(IPactCommerce.DisputeStatus.Rejected));
         assertEq(dispute.resolution, resolution);
+        assertEq(uint8(job.status), uint8(IPactCommerce.Status.Rejected));
+        assertEq(job.attestation, reason);
         assertEq(usdc.balanceOf(address(this)), expectedJury);
         assertEq(usdc.balanceOf(treasury), expectedProtocol);
         assertEq(usdc.balanceOf(address(commerce)), 0);
+    }
+
+    function testResolveDisputeUpheldRequiresExplicitTerminalStatus() external {
+        uint256 jobId = _createAndFundJob(provider, evaluator, address(0), BUDGET, 7 days);
+        bytes32 deliverable = keccak256("deliverable:invalid-final-status");
+
+        vm.prank(provider);
+        commerce.submit(jobId, deliverable);
+        vm.prank(evaluator);
+        commerce.complete(jobId, keccak256("attestation:approved"));
+
+        vm.prank(outsider);
+        uint256 disputeId = commerce.raiseDispute(
+            jobId,
+            keccak256("settlement"),
+            keccak256("receipt://invalid-final-status"),
+            keccak256("evidence://jury"),
+            DISPUTE_BOND
+        );
+
+        vm.expectRevert(PactCommerce.InvalidDisputeResolutionStatus.selector);
+        commerce.resolveDispute(disputeId, true, IPactCommerce.Status.Funded, keccak256("jury:invalid-status"));
     }
 
     function testRaiseDisputeRequiresTerminalJobAndExactBond() external {
@@ -930,7 +956,8 @@ contract PactCommerceTest is Test {
 
         commerce.transferOwnership(address(governance));
 
-        uint256 proposalId = _createGovernanceDisputeProposal(disputeId, true, resolution);
+        uint256 proposalId =
+            _createGovernanceDisputeProposal(disputeId, true, IPactCommerce.Status.Rejected, resolution);
         _voteForAndExecuteProposal(proposalId);
 
         uint256 penaltyAmount = (DISPUTE_BOND * DISPUTE_UPHELD_PENALTY_BPS) / 10_000;
@@ -942,6 +969,7 @@ contract PactCommerceTest is Test {
         IPactCommerce.Job memory job = commerce.getJob(jobId);
         assertEq(uint8(dispute.status), uint8(IPactCommerce.DisputeStatus.Upheld));
         assertEq(dispute.resolution, resolution);
+        assertEq(uint8(job.status), uint8(IPactCommerce.Status.Rejected));
         assertEq(job.attestation, resolution);
         assertEq(usdc.balanceOf(outsider), INITIAL_BALANCE - DISPUTE_BOND + expectedRefund);
         assertEq(usdc.balanceOf(address(governance)), expectedJury);
@@ -984,13 +1012,15 @@ contract PactCommerceTest is Test {
         );
     }
 
-    function _createGovernanceDisputeProposal(uint256 disputeId, bool upheld, bytes32 resolution)
-        internal
-        returns (uint256 proposalId)
-    {
+    function _createGovernanceDisputeProposal(
+        uint256 disputeId,
+        bool upheld,
+        IPactCommerce.Status finalStatus,
+        bytes32 resolution
+    ) internal returns (uint256 proposalId) {
         vm.prank(voterA);
         proposalId = governance.createCommerceDisputeProposal(
-            address(commerce), disputeId, upheld, resolution, "governance dispute resolution"
+            address(commerce), disputeId, upheld, finalStatus, resolution, "governance dispute resolution"
         );
     }
 

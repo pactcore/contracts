@@ -83,6 +83,7 @@ contract PactCommerce is IPactCommerce, Ownable, ReentrancyGuard {
         uint256 indexed disputeId,
         uint256 indexed jobId,
         bool upheld,
+        Status finalStatus,
         bytes32 resolution,
         address resolver,
         address juryRecipient,
@@ -109,6 +110,7 @@ contract PactCommerce is IPactCommerce, Ownable, ReentrancyGuard {
     error DisputeAlreadyExists();
     error DisputeNotOpen();
     error InvalidDisputeBond();
+    error InvalidDisputeResolutionStatus();
 
     constructor(address paymentTokenAddress, address treasuryAddress, uint16 feeBps) Ownable(msg.sender) {
         if (paymentTokenAddress == address(0)) revert ZeroAddress();
@@ -398,7 +400,10 @@ contract PactCommerce is IPactCommerce, Ownable, ReentrancyGuard {
         emit DisputeRaised(disputeId, jobId, msg.sender, subjectType, subjectRef, evidenceHash, expectedBondAmount);
     }
 
-    function resolveDispute(uint256 disputeId, bool upheld, bytes32 resolution) external nonReentrant {
+    function resolveDispute(uint256 disputeId, bool upheld, Status finalStatus, bytes32 resolution)
+        external
+        nonReentrant
+    {
         if (msg.sender != owner()) revert UnauthorizedCaller();
 
         Dispute storage dispute = _getDispute(disputeId);
@@ -416,6 +421,10 @@ contract PactCommerce is IPactCommerce, Ownable, ReentrancyGuard {
         uint256 protocolAmount;
 
         if (upheld) {
+            if (finalStatus != Status.Completed && finalStatus != Status.Rejected && finalStatus != Status.Expired) {
+                revert InvalidDisputeResolutionStatus();
+            }
+
             uint256 penaltyAmount = (dispute.bondAmount * upheldDisputePenaltyBps) / BPS_DENOMINATOR;
             challengerRefundAmount = dispute.bondAmount - penaltyAmount;
             juryAmount = penaltyAmount / 2;
@@ -424,9 +433,13 @@ contract PactCommerce is IPactCommerce, Ownable, ReentrancyGuard {
             if (challengerRefundAmount > 0) {
                 paymentToken.safeTransfer(dispute.challenger, challengerRefundAmount);
             }
+
+            job.status = finalStatus;
+            job.attestation = resolution;
         } else {
             juryAmount = dispute.bondAmount / 2;
             protocolAmount = dispute.bondAmount - juryAmount;
+            finalStatus = job.status;
         }
 
         if (juryAmount > 0) {
@@ -440,6 +453,7 @@ contract PactCommerce is IPactCommerce, Ownable, ReentrancyGuard {
             disputeId,
             dispute.jobId,
             upheld,
+            finalStatus,
             resolution,
             msg.sender,
             juryRecipient,
@@ -448,7 +462,6 @@ contract PactCommerce is IPactCommerce, Ownable, ReentrancyGuard {
             juryAmount,
             protocolAmount
         );
-        job.attestation = resolution;
     }
 
     function claimRefund(uint256 jobId) external nonReentrant {

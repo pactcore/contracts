@@ -4,6 +4,7 @@ pragma solidity ^0.8.24;
 import {Test} from "forge-std/Test.sol";
 import {GovernanceReviewEvaluator} from "../src/evaluators/GovernanceReviewEvaluator.sol";
 import {PactCommerce} from "../src/PactCommerce.sol";
+import {IPactCommerce} from "../src/interfaces/IPactCommerce.sol";
 import {PactGovernance} from "../src/PactGovernance.sol";
 import {MockUSDC} from "./mocks/MockUSDC.sol";
 
@@ -158,11 +159,14 @@ contract PactGovernanceTest is Test {
         bytes32 resolution = keccak256("dao:dispute-resolution");
 
         vm.prank(alice);
-        uint256 proposalId =
-            governance.createCommerceDisputeProposal(address(commerce), 9, true, resolution, "dao resolves dispute");
+        uint256 proposalId = governance.createCommerceDisputeProposal(
+            address(commerce), 9, true, IPactCommerce.Status.Rejected, resolution, "dao resolves dispute"
+        );
 
         PactGovernance.Proposal memory proposal = governance.getProposal(proposalId);
-        bytes memory expectedData = abi.encodeWithSelector(PactCommerce.resolveDispute.selector, 9, true, resolution);
+        bytes memory expectedData = abi.encodeWithSelector(
+            PactCommerce.resolveDispute.selector, 9, true, IPactCommerce.Status.Rejected, resolution
+        );
 
         assertEq(proposal.target, address(commerce));
         assertEq(proposal.value, 0);

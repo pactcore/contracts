@@ -224,7 +224,7 @@ contract CommitteeReviewEvaluatorTest is Test {
         vm.expectRevert(abi.encodeWithSelector(CommitteeReviewEvaluator.JobAccountingNotReady.selector));
         committeeEvaluator.finalizeJobAccounting(jobId);
 
-        commerce.resolveDispute(disputeId, true, failureAttestation);
+        commerce.resolveDispute(disputeId, true, IPactCommerce.Status.Rejected, failureAttestation);
         committeeEvaluator.finalizeJobAccounting(jobId);
 
         IPactCommerce.Dispute memory dispute = commerce.getDispute(disputeId);
@@ -234,6 +234,7 @@ contract CommitteeReviewEvaluatorTest is Test {
         assertEq(usdc.balanceOf(treasury), treasuryBalanceBefore + (disputeBond / 20));
 
         IPactCommerce.Job memory job = commerce.getJob(jobId);
+        assertEq(uint8(job.status), uint8(IPactCommerce.Status.Rejected));
         assertEq(job.attestation, failureAttestation);
 
         _assertValidatorAccount(validatorA, MINIMUM_STAKE, 0, 1, 0, true);

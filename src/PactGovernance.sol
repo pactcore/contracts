@@ -113,10 +113,11 @@ contract PactGovernance is Ownable, ReentrancyGuard {
         address commerceTarget,
         uint256 disputeId,
         bool upheld,
+        IPactCommerce.Status finalStatus,
         bytes32 resolution,
         string calldata description
     ) external returns (uint256 proposalId) {
-        bytes memory data = abi.encodeCall(IPactCommerce.resolveDispute, (disputeId, upheld, resolution));
+        bytes memory data = abi.encodeCall(IPactCommerce.resolveDispute, (disputeId, upheld, finalStatus, resolution));
         proposalId = _createProposal(commerceTarget, 0, data, description);
     }
 

@@ -134,7 +134,6 @@ contract CommitteeReviewEvaluator is IEvaluatorSettlementRecipient, Ownable, Ree
     error AlreadyVoted();
     error InvalidJobStatus();
     error InvalidOptParamsHash(bytes32 actual, bytes32 expected);
-    error UnknownDisputeOutcome(bytes32 resolution);
 
     constructor(
         address commerceAddress,
@@ -151,8 +150,8 @@ contract CommitteeReviewEvaluator is IEvaluatorSettlementRecipient, Ownable, Ree
             revert ZeroAddress();
         }
         if (
-            minimumStakeAmount == 0 || disputeWindowSeconds == 0 || slashingBpsValue == 0
-                || slashingBpsValue > 10_000 || slashAfterDisagreementsValue == 0
+            minimumStakeAmount == 0 || disputeWindowSeconds == 0 || slashingBpsValue == 0 || slashingBpsValue > 10_000
+                || slashAfterDisagreementsValue == 0
         ) {
             revert InvalidConfig();
         }
@@ -263,9 +262,7 @@ contract CommitteeReviewEvaluator is IEvaluatorSettlementRecipient, Ownable, Ree
             }
         }
 
-        emit JobAccountingFinalized(
-            jobId, finalOutcome, disputed, rewardAmount, alignedValidatorCount, finalResolution
-        );
+        emit JobAccountingFinalized(jobId, finalOutcome, disputed, rewardAmount, alignedValidatorCount, finalResolution);
     }
 
     function getVoters(uint256 jobId) external view returns (address[] memory) {
@@ -421,15 +418,15 @@ contract CommitteeReviewEvaluator is IEvaluatorSettlementRecipient, Ownable, Ree
             return (resolution.committeeOutcome, resolution.attestation, true);
         }
 
-        JobConfig storage config = jobConfigs[jobId];
-        if (dispute.resolution == config.successAttestation) {
-            return (VoteChoice.Approve, dispute.resolution, true);
+        IPactCommerce.Job memory job = commerce.getJob(jobId);
+        if (job.status == IPactCommerce.Status.Completed) {
+            return (VoteChoice.Approve, job.attestation, true);
         }
-        if (dispute.resolution == config.failureAttestation) {
-            return (VoteChoice.Reject, dispute.resolution, true);
+        if (job.status == IPactCommerce.Status.Rejected) {
+            return (VoteChoice.Reject, job.attestation, true);
         }
 
-        revert UnknownDisputeOutcome(dispute.resolution);
+        revert InvalidJobStatus();
     }
 
     function _settleValidatorAccounting(uint256 jobId, VoteChoice outcome)
