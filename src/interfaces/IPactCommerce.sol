@@ -11,6 +11,13 @@ interface IPactCommerce {
         Expired
     }
 
+    enum DisputeStatus {
+        None,
+        Open,
+        Upheld,
+        Rejected
+    }
+
     struct Job {
         address client;
         address provider;
@@ -22,6 +29,17 @@ interface IPactCommerce {
         bytes32 deliverable;
         bytes32 attestation;
         string description;
+    }
+
+    struct Dispute {
+        uint256 jobId;
+        address challenger;
+        bytes32 subjectType;
+        bytes32 subjectRef;
+        bytes32 evidenceHash;
+        uint256 bondAmount;
+        DisputeStatus status;
+        bytes32 resolution;
     }
 
     function createJob(address provider, address evaluator, uint256 expiredAt, string calldata description)
@@ -52,15 +70,31 @@ interface IPactCommerce {
     function submit(uint256 jobId, bytes32 deliverable, bytes calldata optParams) external;
 
     function complete(uint256 jobId, bytes32 reason) external;
-    function getJob(uint256 jobId) external view returns (Job memory);
-    function getNextJobId() external view returns (uint256);
-
     function complete(uint256 jobId, bytes32 reason, bytes calldata optParams) external;
 
     function reject(uint256 jobId, bytes32 reason) external;
     function reject(uint256 jobId, bytes32 reason, bytes calldata optParams) external;
 
-    function claimRefund(uint256 jobId) external;
+    function raiseDispute(
+        uint256 jobId,
+        bytes32 subjectType,
+        bytes32 subjectRef,
+        bytes32 evidenceHash,
+        uint256 expectedBondAmount
+    ) external returns (uint256 disputeId);
 
-    function previewPayout(uint256 jobId) external view returns (uint256 providerAmount, uint256 feeAmount);
+    function resolveDispute(uint256 disputeId, bool upheld, bytes32 resolution) external;
+
+    function claimRefund(uint256 jobId) external;
+    function getJob(uint256 jobId) external view returns (Job memory);
+    function getDispute(uint256 disputeId) external view returns (Dispute memory);
+    function getDisputeForJob(uint256 jobId) external view returns (uint256 disputeId);
+    function disputeBondAmount() external view returns (uint256);
+    function getNextJobId() external view returns (uint256);
+    function getNextDisputeId() external view returns (uint256);
+    function previewPayout(uint256 jobId) external view returns (uint256 providerAmount, uint256 withheldAmount);
+    function previewSettlement(uint256 jobId)
+        external
+        view
+        returns (uint256 providerAmount, uint256 validatorAmount, uint256 treasuryAmount, uint256 issuerAmount);
 }

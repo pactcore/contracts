@@ -3,9 +3,10 @@ pragma solidity ^0.8.24;
 
 import {Ownable} from "openzeppelin-contracts/contracts/access/Ownable.sol";
 
+import {IEvaluatorSettlementRecipient} from "../interfaces/IEvaluatorSettlementRecipient.sol";
 import {IPactCommerce} from "../interfaces/IPactCommerce.sol";
 
-contract DeterministicReceiptEvaluator is Ownable {
+contract DeterministicReceiptEvaluator is IEvaluatorSettlementRecipient, Ownable {
     IPactCommerce public immutable commerce;
 
     event ExpectationConfigured(
@@ -134,5 +135,9 @@ contract DeterministicReceiptEvaluator is Ownable {
             optParamsHash,
             optParamsHashMatched
         );
+    }
+
+    function settlementRecipient() external view returns (address) {
+        return owner();
     }
 }

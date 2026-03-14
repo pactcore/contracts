@@ -1,9 +1,10 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.24;
 
+import {IEvaluatorSettlementRecipient} from "../interfaces/IEvaluatorSettlementRecipient.sol";
 import {IPactCommerce} from "../interfaces/IPactCommerce.sol";
 
-contract GovernanceReviewEvaluator {
+contract GovernanceReviewEvaluator is IEvaluatorSettlementRecipient {
     IPactCommerce public immutable commerce;
     address public immutable governance;
 
@@ -31,5 +32,9 @@ contract GovernanceReviewEvaluator {
         }
 
         emit GovernanceDecisionExecuted(jobId, approve, reason, keccak256(optParams));
+    }
+
+    function settlementRecipient() external view returns (address) {
+        return governance;
     }
 }
