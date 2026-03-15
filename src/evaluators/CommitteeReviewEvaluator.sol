@@ -425,6 +425,9 @@ contract CommitteeReviewEvaluator is IEvaluatorSettlementRecipient, Ownable, Ree
         if (job.status == IPactCommerce.Status.Rejected) {
             return (VoteChoice.Reject, job.attestation, true);
         }
+        if (job.status == IPactCommerce.Status.Expired) {
+            return (VoteChoice.None, job.attestation, true);
+        }
 
         revert InvalidJobStatus();
     }

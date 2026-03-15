@@ -129,6 +129,18 @@ Purpose:
 
 This is the PACT path for multi-agent validator committees: a job still exposes a single ERC-8183 `evaluator` address, but that address can now encapsulate quorum voting, reward routing, dispute-aware accounting, and slashing semantics internally.
 
+### Human Jury
+File: `src/HumanJury.sol`
+
+Purpose:
+- Turns terminal-state `raiseDispute(...)` appeals into a concrete Layer-3 jury contract instead of leaving review as a bare `owner()` action.
+- Maintains a registry of high-reputation jurors, pseudo-randomly selects an odd-sized 5-11 member panel per dispute, and tracks per-dispute `Uphold` / `Reject` votes.
+- Calls `resolveDispute(...)` once the panel reaches a majority and, when `PactCommerce` ownership is delegated to the jury contract, becomes the onchain jury recipient for dispute-bond payouts.
+- Splits the jury share of the dispute bond across aligned jurors as claimable rewards, so the whitepaper's human-jury lane has explicit economic routing instead of an implied treasury sink.
+- Keeps low-reputation or inactive jurors out of new panels while still exposing the selected panel for offchain transparency and auditability.
+
+This closes the biggest remaining gap in the three-layer verification path: committee outcomes can now bridge into an actual jury contract before governance-level policy orchestration.
+
 ### Governance Evaluator
 Files:
 - `src/evaluators/GovernanceReviewEvaluator.sol`
@@ -171,6 +183,8 @@ The rest of the repository remains unchanged:
 - deterministic evaluator completion and rejection paths, including forwarded opaque evaluation params, hash-bound proof bundle checks, and one-shot expectation consumption
 
 `test/CommitteeReviewEvaluator.t.sol` covers committee approval and rejection flows, dispute-window gating, jury/dispute overrides of validator accounting, reward splitting across aligned validators, opt-params hash binding, and slashing after three consecutive deviations.
+
+`test/HumanJury.t.sol` covers high-reputation jury-panel selection, low-reputation juror exclusion, upheld-vs-rejected dispute outcomes, jury reward distribution, and the bridge from committee review into final jury accounting.
 
 `test/PactGovernance.t.sol` also covers governance-authored ERC-8183 decision and dispute proposals and verifies the encoded call target/data for both helper paths.
 

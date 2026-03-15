@@ -247,6 +247,61 @@ contract CommitteeReviewEvaluatorTest is Test {
         assertEq(usdc.balanceOf(validatorC), validatorCBalanceBefore + validatorReward);
     }
 
+    function testExpiredAppealOutcomeFinalizesAccountingWithoutValidatorRewards() external {
+        uint256 jobId = _createAndFundJob(7 days);
+        bytes32 deliverable = keccak256("deliverable:expired-appeal");
+        bytes32 successAttestation = keccak256("attestation:committee-approved-expired-appeal");
+        bytes32 failureAttestation = keccak256("attestation:committee-rejected-expired-appeal");
+        bytes32 expiredResolution = keccak256("jury:expired-final-status");
+        uint256 validatorReward = (BUDGET * VALIDATOR_REWARD_BPS) / 10_000;
+
+        vm.prank(provider);
+        commerce.submit(jobId, deliverable);
+
+        committeeEvaluator.configureJob(jobId, successAttestation, failureAttestation, 2, 2);
+
+        vm.prank(validatorA);
+        committeeEvaluator.castVote(jobId, CommitteeReviewEvaluator.VoteChoice.Approve);
+
+        vm.prank(validatorC);
+        committeeEvaluator.castVote(jobId, CommitteeReviewEvaluator.VoteChoice.Reject);
+
+        vm.prank(validatorB);
+        committeeEvaluator.castVote(jobId, CommitteeReviewEvaluator.VoteChoice.Approve);
+
+        uint256 disputeBond = commerce.disputeBondAmount();
+        uint256 challengerBalanceBefore = usdc.balanceOf(challenger);
+        uint256 treasuryBalanceBefore = usdc.balanceOf(treasury);
+
+        vm.prank(challenger);
+        uint256 disputeId = commerce.raiseDispute(
+            jobId,
+            keccak256("committee-decision"),
+            keccak256("committee://expired"),
+            keccak256("evidence://expired"),
+            disputeBond
+        );
+
+        commerce.resolveDispute(disputeId, true, IPactCommerce.Status.Expired, expiredResolution);
+        committeeEvaluator.finalizeJobAccounting(jobId);
+
+        IPactCommerce.Dispute memory dispute = commerce.getDispute(disputeId);
+        IPactCommerce.Job memory job = commerce.getJob(jobId);
+        assertEq(uint8(dispute.status), uint8(IPactCommerce.DisputeStatus.Upheld));
+        assertEq(dispute.resolution, expiredResolution);
+        assertEq(uint8(job.status), uint8(IPactCommerce.Status.Expired));
+        assertEq(job.attestation, expiredResolution);
+
+        _assertValidatorAccount(validatorA, MINIMUM_STAKE, 0, 1, 0, true);
+        _assertValidatorAccount(validatorB, MINIMUM_STAKE, 0, 1, 0, true);
+        _assertValidatorAccount(validatorC, MINIMUM_STAKE, 0, 1, 0, true);
+
+        uint256 penaltyAmount = disputeBond / 10;
+        assertEq(usdc.balanceOf(challenger), challengerBalanceBefore - penaltyAmount);
+        assertEq(usdc.balanceOf(treasury), treasuryBalanceBefore + (penaltyAmount / 2) + validatorReward);
+        assertEq(usdc.balanceOf(address(committeeEvaluator)), MINIMUM_STAKE * 3);
+    }
+
     function testCommitteeRejectsUnexpectedOptParamsHash() external {
         uint256 jobId = _createAndFundJob(7 days);
         bytes32 deliverable = keccak256("deliverable:hash-bound");
