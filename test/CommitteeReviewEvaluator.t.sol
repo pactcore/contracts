@@ -538,6 +538,14 @@ contract CommitteeReviewEvaluatorTest is Test {
         assertEq(committee[1], expectedCommittee[1]);
     }
 
+    function testUnsetValidatorReputationDefaultsToMaximumScore() external {
+        assertEq(committeeEvaluator.validatorReputation(validatorA), 100);
+        assertEq(committeeEvaluator.validatorReputation(makeAddr("unsetValidator")), 100);
+
+        committeeEvaluator.setValidatorReputation(validatorA, 40);
+        assertEq(committeeEvaluator.validatorReputation(validatorA), 40);
+    }
+
     function testSetValidatorReputationRejectsOutOfRangeScores() external {
         vm.expectRevert(abi.encodeWithSelector(CommitteeReviewEvaluator.InvalidReputation.selector, uint16(0)));
         committeeEvaluator.setValidatorReputation(validatorA, 0);

@@ -51,13 +51,13 @@ Whitepaper intent:
 
 Current implementation:
 - `src/hooks/ReputationGateHook.sol` and `src/hooks/CounterpartyPolicyHook.sol` enforce provider-score gating and evaluator allowlists around the ERC-8183 commerce flow.
-- This covers reputation-aware assignment and funding policy, but not committee-validator reputation scoring yet.
+- `src/evaluators/CommitteeReviewEvaluator.sol` also supports owner-managed validator reputation scores in the whitepaper's 0-100 range and uses those weights during per-job committee selection.
 
 ## Explicit remaining gaps
 
 The current contracts intentionally stop short of full whitepaper parity in a few places:
 - No onchain Layer 1 auto-validation module exists yet; the repo starts at ERC-8183 job submission plus evaluator review.
-- Committee selection is now pseudo-random per job, but it is still not reputation-weighted and does not use verifiable randomness.
+- Committee selection is now pseudo-random per job and reputation-weighted, but it still relies on owner-managed scores and `block.prevrandao` instead of verifiable randomness or onchain performance-derived reputation updates.
 - Juror eligibility is reputation-gated and panel selection is pseudo-random, but the full whitepaper reputation system (validator accuracy, appeal win rate, uptime, broader juror scoring updates) is not yet persisted onchain.
 
 ## Validation run
