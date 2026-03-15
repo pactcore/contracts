@@ -228,7 +228,7 @@ contract HumanJury is Ownable, ReentrancyGuard {
     }
 
     /// @notice Expire a review that has passed its deadline without reaching majority.
-    /// Defaults to rejecting the dispute (upholding the original decision).
+    /// Routes through PactCommerce dispute expiry so stalled jury review returns the full bond.
     /// Anyone may call this after the deadline.
     function expireReview(uint256 disputeId) external nonReentrant {
         ReviewConfig storage review = reviews[disputeId];
@@ -241,8 +241,19 @@ contract HumanJury is Ownable, ReentrancyGuard {
         ReviewTally storage tally = tallies[disputeId];
         emit ReviewExpired(disputeId, deadline, tally.upholdCount, tally.rejectCount);
 
-        // Default to rejecting the dispute (uphold original decision) on expiry
-        _resolveReview(disputeId, false);
+        review.resolved = true;
+        review.upheld = false;
+        review.resolvedAt = uint64(block.timestamp);
+
+        IPactCommerce.Dispute memory dispute = commerce.getDispute(disputeId);
+        IPactCommerce.Job memory job = commerce.getJob(dispute.jobId);
+
+        // Preserve the original terminal job state and refund the full bond when jury liveness fails.
+        commerce.expireDispute(disputeId, review.rejectedResolution);
+
+        _releasePendingPanels(disputeId);
+
+        emit ReviewResolved(disputeId, false, job.status, review.rejectedResolution, 0, 0);
     }
 
     function getPanel(uint256 disputeId) external view returns (address[] memory) {
