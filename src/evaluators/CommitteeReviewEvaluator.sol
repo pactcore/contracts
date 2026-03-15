@@ -146,6 +146,7 @@ contract CommitteeReviewEvaluator is IEvaluatorSettlementRecipient, Ownable, Ree
     error JobAccountingAlreadyFinalized();
     error JobAccountingNotReady();
     error ReviewDeadlineNotReached(uint256 reviewDeadline);
+    error ReviewDeadlinePassed(uint256 reviewDeadline);
     error InvalidVote();
     error AlreadyVoted();
     error InvalidJobStatus();
@@ -422,6 +423,7 @@ contract CommitteeReviewEvaluator is IEvaluatorSettlementRecipient, Ownable, Ree
         JobConfig storage config = jobConfigs[jobId];
         if (config.approvalThreshold == 0 || config.rejectionThreshold == 0) revert JobNotConfigured();
         if (config.resolved) revert JobAlreadyResolved();
+        if (block.timestamp >= config.reviewDeadline) revert ReviewDeadlinePassed(config.reviewDeadline);
         if (!committeeMembers[jobId][msg.sender]) revert ValidatorNotSelected(msg.sender);
         if (votes[jobId][msg.sender] != VoteChoice.None) revert AlreadyVoted();
 

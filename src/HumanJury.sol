@@ -95,6 +95,7 @@ contract HumanJury is Ownable, ReentrancyGuard {
     error InvalidAmount();
     error InsufficientEligibleJurors(uint256 eligible, uint256 required);
     error ReviewDeadlineNotReached();
+    error ReviewDeadlinePassed(uint256 deadline);
 
     event ReviewExpired(uint256 indexed disputeId, uint64 deadline, uint8 upholdCount, uint8 rejectCount);
 
@@ -193,6 +194,10 @@ contract HumanJury is Ownable, ReentrancyGuard {
         ReviewConfig storage review = reviews[disputeId];
         if (review.createdAt == 0) revert ReviewNotFound();
         if (review.resolved) revert ReviewAlreadyResolved();
+
+        uint64 deadline = uint64(review.createdAt + reviewDeadlineDuration);
+        if (block.timestamp >= deadline) revert ReviewDeadlinePassed(deadline);
+
         if (!isSelectedJuror[disputeId][msg.sender]) revert JurorNotSelected();
         if (votes[disputeId][msg.sender] != VoteChoice.None) revert AlreadyVoted();
 

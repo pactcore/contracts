@@ -596,6 +596,38 @@ contract CommitteeReviewEvaluatorTest is Test {
         committeeEvaluator.setValidatorReputation(validatorA, 101);
     }
 
+    function testCommitteeRejectsLateVotesAfterDeadline() external {
+        uint256 jobId = _createAndFundJob(7 days);
+        bytes32 deliverable = keccak256("deliverable:late-vote");
+        bytes32 successAttestation = keccak256("attestation:late-vote-approved");
+        bytes32 failureAttestation = keccak256("attestation:late-vote-rejected");
+
+        vm.prank(provider);
+        commerce.submit(jobId, deliverable);
+
+        uint256 configTimestamp = block.timestamp;
+        committeeEvaluator.configureJob(jobId, successAttestation, failureAttestation, 2, 2);
+
+        vm.prank(validatorA);
+        committeeEvaluator.castVote(jobId, CommitteeReviewEvaluator.VoteChoice.Approve);
+
+        uint256 expectedDeadline = configTimestamp + REVIEW_DEADLINE;
+        vm.warp(expectedDeadline);
+
+        vm.expectRevert(
+            abi.encodeWithSelector(CommitteeReviewEvaluator.ReviewDeadlinePassed.selector, expectedDeadline)
+        );
+        vm.prank(validatorB);
+        committeeEvaluator.castVote(jobId, CommitteeReviewEvaluator.VoteChoice.Approve);
+
+        committeeEvaluator.finalizeDeadlockedJob(jobId);
+
+        IPactCommerce.Job memory job = commerce.getJob(jobId);
+        assertEq(uint8(job.status), uint8(IPactCommerce.Status.Rejected));
+        assertEq(job.attestation, failureAttestation);
+        _assertValidatorAccount(validatorB, MINIMUM_STAKE, 0, 0, 0, true);
+    }
+
     function testSplitVoteDeadlockCanBeResolvedAfterDeadline() external {
         uint256 jobId = _createAndFundJob(7 days);
         bytes32 deliverable = keccak256("deliverable:split-vote");
