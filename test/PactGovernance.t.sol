@@ -154,6 +154,21 @@ contract PactGovernanceTest is Test {
         assertEq(keccak256(proposal.data), keccak256(expectedData));
     }
 
+    function testCreateCommerceDisputeProposalTargetsCommerceResolution() external {
+        bytes32 resolution = keccak256("dao:dispute-resolution");
+
+        vm.prank(alice);
+        uint256 proposalId =
+            governance.createCommerceDisputeProposal(address(commerce), 9, true, resolution, "dao resolves dispute");
+
+        PactGovernance.Proposal memory proposal = governance.getProposal(proposalId);
+        bytes memory expectedData = abi.encodeWithSelector(PactCommerce.resolveDispute.selector, 9, true, resolution);
+
+        assertEq(proposal.target, address(commerce));
+        assertEq(proposal.value, 0);
+        assertEq(keccak256(proposal.data), keccak256(expectedData));
+    }
+
     function _createSetValueProposal(uint256 newValue) internal returns (uint256 proposalId) {
         bytes memory data = abi.encodeWithSelector(GovernanceTarget.setValue.selector, newValue);
         vm.prank(alice);

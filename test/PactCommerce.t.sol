@@ -35,7 +35,9 @@ contract PactCommerceTest is Test {
 
     uint256 private constant INITIAL_BALANCE = 20_000e6;
     uint256 private constant BUDGET = 1_000e6;
+    uint256 private constant DISPUTE_BOND = 100e6;
     uint16 private constant PLATFORM_FEE_BPS = 500;
+    uint16 private constant DISPUTE_UPHELD_PENALTY_BPS = 1_000;
     uint256 private constant MINIMUM_PROVIDER_SCORE = 80;
     uint64 private constant VOTING_DELAY = 1;
     uint64 private constant VOTING_PERIOD = 3 days;
@@ -59,7 +61,10 @@ contract PactCommerceTest is Test {
         governanceEvaluator = new GovernanceReviewEvaluator(address(commerce), address(governance));
 
         usdc.mint(client, INITIAL_BALANCE);
+        usdc.mint(outsider, INITIAL_BALANCE);
         vm.prank(client);
+        usdc.approve(address(commerce), type(uint256).max);
+        vm.prank(outsider);
         usdc.approve(address(commerce), type(uint256).max);
 
         governanceToken.mint(voterA, VOTER_A_POWER);
@@ -731,6 +736,179 @@ contract PactCommerceTest is Test {
         assertEq(usdc.balanceOf(address(commerce)), BUDGET);
     }
 
+    function testRaiseDisputeEscrowsBondForCompletedJob() external {
+        uint256 jobId = _createAndFundJob(provider, evaluator, address(0), BUDGET, 7 days);
+        bytes32 deliverable = keccak256("deliverable:dispute-complete");
+        bytes32 attestation = keccak256("attestation:approved");
+        bytes32 subjectType = keccak256("settlement");
+        bytes32 subjectRef = keccak256("receipt://1");
+        bytes32 evidenceHash = keccak256("evidence://bundle");
+
+        vm.prank(provider);
+        commerce.submit(jobId, deliverable);
+        vm.prank(evaluator);
+        commerce.complete(jobId, attestation);
+
+        vm.prank(outsider);
+        uint256 disputeId = commerce.raiseDispute(jobId, subjectType, subjectRef, evidenceHash, DISPUTE_BOND);
+
+        IPactCommerce.Dispute memory dispute = commerce.getDispute(disputeId);
+        assertEq(dispute.jobId, jobId);
+        assertEq(dispute.challenger, outsider);
+        assertEq(dispute.subjectType, subjectType);
+        assertEq(dispute.subjectRef, subjectRef);
+        assertEq(dispute.evidenceHash, evidenceHash);
+        assertEq(dispute.bondAmount, DISPUTE_BOND);
+        assertEq(uint8(dispute.status), uint8(IPactCommerce.DisputeStatus.Open));
+        assertEq(commerce.getDisputeForJob(jobId), disputeId);
+        assertEq(usdc.balanceOf(address(commerce)), DISPUTE_BOND);
+        assertEq(usdc.balanceOf(outsider), INITIAL_BALANCE - DISPUTE_BOND);
+    }
+
+    function testResolveDisputeUpheldReturnsBondToChallengerAndUpdatesResolution() external {
+        uint256 jobId = _createAndFundJob(provider, evaluator, address(0), BUDGET, 7 days);
+        bytes32 deliverable = keccak256("deliverable:upheld");
+        bytes32 attestation = keccak256("attestation:approved");
+        bytes32 resolution = keccak256("jury:override");
+
+        vm.prank(provider);
+        commerce.submit(jobId, deliverable);
+        vm.prank(evaluator);
+        commerce.complete(jobId, attestation);
+
+        vm.prank(outsider);
+        uint256 disputeId = commerce.raiseDispute(
+            jobId, keccak256("settlement"), keccak256("receipt://2"), keccak256("evidence://jury"), DISPUTE_BOND
+        );
+
+        commerce.resolveDispute(disputeId, true, resolution);
+
+        uint256 penaltyAmount = (DISPUTE_BOND * DISPUTE_UPHELD_PENALTY_BPS) / 10_000;
+        uint256 expectedRefund = DISPUTE_BOND - penaltyAmount;
+        uint256 expectedJury = penaltyAmount / 2;
+        uint256 expectedProtocol = penaltyAmount - expectedJury;
+
+        IPactCommerce.Dispute memory dispute = commerce.getDispute(disputeId);
+        IPactCommerce.Job memory job = commerce.getJob(jobId);
+        assertEq(uint8(dispute.status), uint8(IPactCommerce.DisputeStatus.Upheld));
+        assertEq(dispute.resolution, resolution);
+        assertEq(job.attestation, resolution);
+        assertEq(usdc.balanceOf(outsider), INITIAL_BALANCE - DISPUTE_BOND + expectedRefund);
+        assertEq(usdc.balanceOf(address(this)), expectedJury);
+        assertEq(usdc.balanceOf(treasury), ((BUDGET * PLATFORM_FEE_BPS) / 10_000) + expectedProtocol);
+        assertEq(usdc.balanceOf(address(commerce)), 0);
+    }
+
+    function testResolveDisputeRejectedPaysBondToOwner() external {
+        uint256 jobId = _createAndFundJob(provider, evaluator, address(0), BUDGET, 7 days);
+        bytes32 reason = keccak256("attestation:rejected");
+        bytes32 resolution = keccak256("jury:bond-forfeited");
+
+        vm.prank(evaluator);
+        commerce.reject(jobId, reason);
+
+        vm.prank(outsider);
+        uint256 disputeId = commerce.raiseDispute(
+            jobId, keccak256("rejection"), keccak256("decision://1"), keccak256("evidence://appeal"), DISPUTE_BOND
+        );
+
+        commerce.resolveDispute(disputeId, false, resolution);
+
+        uint256 expectedJury = DISPUTE_BOND / 2;
+        uint256 expectedProtocol = DISPUTE_BOND - expectedJury;
+
+        IPactCommerce.Dispute memory dispute = commerce.getDispute(disputeId);
+        assertEq(uint8(dispute.status), uint8(IPactCommerce.DisputeStatus.Rejected));
+        assertEq(dispute.resolution, resolution);
+        assertEq(usdc.balanceOf(address(this)), expectedJury);
+        assertEq(usdc.balanceOf(treasury), expectedProtocol);
+        assertEq(usdc.balanceOf(address(commerce)), 0);
+    }
+
+    function testRaiseDisputeRequiresTerminalJobAndExactBond() external {
+        uint256 openJobId = _createJob(provider, evaluator, address(0), 7 days);
+
+        vm.expectRevert(PactCommerce.InvalidStatus.selector);
+        vm.prank(outsider);
+        commerce.raiseDispute(
+            openJobId, keccak256("premature"), keccak256("job://open"), keccak256("evidence://none"), DISPUTE_BOND
+        );
+
+        uint256 completedJobId = _createAndFundJob(provider, evaluator, address(0), BUDGET, 7 days);
+        vm.prank(provider);
+        commerce.submit(completedJobId, keccak256("deliverable:bond-check"));
+        vm.prank(evaluator);
+        commerce.complete(completedJobId, keccak256("attestation:bond-check"));
+
+        vm.expectRevert(PactCommerce.InvalidDisputeBond.selector);
+        vm.prank(outsider);
+        commerce.raiseDispute(
+            completedJobId,
+            keccak256("settlement"),
+            keccak256("receipt://3"),
+            keccak256("evidence://wrong-bond"),
+            DISPUTE_BOND - 1
+        );
+    }
+
+    function testRaiseDisputeAllowsExpiredJobsButOnlyOnePerJob() external {
+        uint256 jobId = _createAndFundJob(provider, evaluator, address(0), BUDGET, 1 days);
+
+        vm.warp(block.timestamp + 1 days);
+        vm.prank(outsider);
+        commerce.claimRefund(jobId);
+
+        vm.prank(client);
+        uint256 disputeId = commerce.raiseDispute(
+            jobId, keccak256("expiry"), keccak256("refund://1"), keccak256("evidence://expired"), DISPUTE_BOND
+        );
+
+        assertEq(commerce.getDisputeForJob(jobId), disputeId);
+
+        vm.expectRevert(PactCommerce.DisputeAlreadyExists.selector);
+        vm.prank(outsider);
+        commerce.raiseDispute(
+            jobId, keccak256("expiry"), keccak256("refund://2"), keccak256("evidence://duplicate"), DISPUTE_BOND
+        );
+    }
+
+    function testGovernanceCanResolveDisputeAfterOwnershipTransfer() external {
+        uint256 jobId = _createAndFundJob(provider, evaluator, address(0), BUDGET, 7 days);
+        bytes32 deliverable = keccak256("deliverable:governance-dispute");
+        bytes32 attestation = keccak256("attestation:approved");
+        bytes32 resolution = keccak256("jury:governance-upheld");
+
+        vm.prank(provider);
+        commerce.submit(jobId, deliverable);
+        vm.prank(evaluator);
+        commerce.complete(jobId, attestation);
+
+        vm.prank(outsider);
+        uint256 disputeId = commerce.raiseDispute(
+            jobId, keccak256("settlement"), keccak256("receipt://governance"), keccak256("evidence://dao"), DISPUTE_BOND
+        );
+
+        commerce.transferOwnership(address(governance));
+
+        uint256 proposalId = _createGovernanceDisputeProposal(disputeId, true, resolution);
+        _voteForAndExecuteProposal(proposalId);
+
+        uint256 penaltyAmount = (DISPUTE_BOND * DISPUTE_UPHELD_PENALTY_BPS) / 10_000;
+        uint256 expectedRefund = DISPUTE_BOND - penaltyAmount;
+        uint256 expectedJury = penaltyAmount / 2;
+        uint256 expectedProtocol = penaltyAmount - expectedJury;
+
+        IPactCommerce.Dispute memory dispute = commerce.getDispute(disputeId);
+        IPactCommerce.Job memory job = commerce.getJob(jobId);
+        assertEq(uint8(dispute.status), uint8(IPactCommerce.DisputeStatus.Upheld));
+        assertEq(dispute.resolution, resolution);
+        assertEq(job.attestation, resolution);
+        assertEq(usdc.balanceOf(outsider), INITIAL_BALANCE - DISPUTE_BOND + expectedRefund);
+        assertEq(usdc.balanceOf(address(governance)), expectedJury);
+        assertEq(usdc.balanceOf(treasury), ((BUDGET * PLATFORM_FEE_BPS) / 10_000) + expectedProtocol);
+        assertEq(usdc.balanceOf(address(commerce)), 0);
+    }
+
     function _createAndFundJob(
         address jobProvider,
         address jobEvaluator,
@@ -763,6 +941,16 @@ contract PactCommerceTest is Test {
         vm.prank(voterA);
         proposalId = governance.createCommerceDecisionProposal(
             address(governanceEvaluator), jobId, approve, attestation, optParams, "governance evaluator decision"
+        );
+    }
+
+    function _createGovernanceDisputeProposal(uint256 disputeId, bool upheld, bytes32 resolution)
+        internal
+        returns (uint256 proposalId)
+    {
+        vm.prank(voterA);
+        proposalId = governance.createCommerceDisputeProposal(
+            address(commerce), disputeId, upheld, resolution, "governance dispute resolution"
         );
     }
 
