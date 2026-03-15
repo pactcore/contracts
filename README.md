@@ -138,6 +138,7 @@ Purpose:
 - Turns terminal-state `raiseDispute(...)` appeals into a concrete Layer-3 jury contract instead of leaving review as a bare `owner()` action.
 - Maintains a registry of high-reputation jurors, pseudo-randomly selects an odd-sized 5-11 member panel per dispute while excluding the job's client/provider/evaluator and the active challenger, and tracks per-dispute `Uphold` / `Reject` votes.
 - Calls `resolveDispute(...)` once the panel reaches a majority and, when `PactCommerce` ownership is delegated to the jury contract, becomes the onchain jury recipient for dispute-bond payouts.
+- Anchors each jury deadline to the dispute's original `openedAt` timestamp and requires the jury deadline configuration to match `PactCommerce`'s dispute-expiry window, so late-created panels cannot outlive or be bypassed by the commerce-layer expiry path.
 - Routes stalled review expiry through `expireDispute(...)`, preserving the original terminal job state while refunding the challenger's full bond when jury liveness fails.
 - Splits the jury share of the dispute bond across aligned jurors as claimable rewards, so the whitepaper's human-jury lane has explicit economic routing instead of an implied treasury sink.
 - Keeps low-reputation or inactive jurors out of new panels while still exposing the selected panel for offchain transparency and auditability.

@@ -272,6 +272,58 @@ contract HumanJuryTest is Test {
         );
     }
 
+    function testConfigureJurorRejectsOutOfRangeReputation() external {
+        vm.expectRevert(abi.encodeWithSelector(HumanJury.InvalidReputation.selector, uint16(101)));
+        humanJury.configureJuror(makeAddr("tooReputable"), 101, true);
+    }
+
+    function testConstructorRevertsWhenReviewDeadlineMismatchesCommerceDisputeWindow() external {
+        uint256 commerceDisputeDeadline = commerce.disputeDeadlineDuration();
+
+        vm.expectRevert(
+            abi.encodeWithSelector(
+                HumanJury.InvalidReviewDeadlineDuration.selector, commerceDisputeDeadline - 1, commerceDisputeDeadline
+            )
+        );
+        new HumanJury(
+            address(commerce), address(usdc), MINIMUM_JUROR_REPUTATION, JURY_PANEL_SIZE, commerceDisputeDeadline - 1
+        );
+    }
+
+    function testCreateReviewRevertsWhenStartedAfterDisputeDeadline() external {
+        uint256 jobId = _createAndFundDirectReviewJob(7 days);
+        bytes32 deliverable = keccak256("deliverable:late-review-creation");
+        bytes32 completionAttestation = keccak256("attestation:late-review-creation");
+        bytes32 reviewResolution = keccak256("rejected-resolution-late-review-creation");
+
+        vm.prank(provider);
+        commerce.submit(jobId, deliverable);
+
+        vm.prank(evaluator);
+        commerce.complete(jobId, completionAttestation);
+
+        uint256 disputeBond = commerce.disputeBondAmount();
+
+        vm.prank(challenger);
+        uint256 disputeId = commerce.raiseDispute(
+            jobId,
+            keccak256("human-review"),
+            keccak256("completion://late-review-creation"),
+            keccak256("evidence://late-review-creation"),
+            disputeBond
+        );
+
+        commerce.transferOwnership(address(humanJury));
+
+        uint256 reviewDeadline = block.timestamp + REVIEW_DEADLINE_DURATION;
+        vm.warp(reviewDeadline);
+
+        vm.expectRevert(abi.encodeWithSelector(HumanJury.ReviewDeadlinePassed.selector, reviewDeadline));
+        humanJury.createReview(
+            disputeId, IPactCommerce.Status.Rejected, keccak256("unused-upheld-resolution"), reviewResolution
+        );
+    }
+
     function testHumanJuryRejectsLateVotesAfterDeadline() external {
         uint256 jobId = _createAndFundDirectReviewJob(7 days);
         bytes32 deliverable = keccak256("deliverable:late-jury-vote");
@@ -298,10 +350,7 @@ contract HumanJuryTest is Test {
         commerce.transferOwnership(address(humanJury));
 
         humanJury.createReview(
-            disputeId,
-            IPactCommerce.Status.Rejected,
-            keccak256("upheld-resolution-late-jury-vote"),
-            rejectedResolution
+            disputeId, IPactCommerce.Status.Rejected, keccak256("upheld-resolution-late-jury-vote"), rejectedResolution
         );
 
         address[] memory panel = humanJury.getPanel(disputeId);
