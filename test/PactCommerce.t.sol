@@ -37,6 +37,8 @@ contract PactCommerceTest is Test {
     uint256 private constant BUDGET = 1_000e6;
     uint256 private constant DISPUTE_BOND = 100e6;
     uint16 private constant PLATFORM_FEE_BPS = 500;
+    uint16 private constant VALIDATOR_REWARD_BPS = 500;
+    uint16 private constant ISSUER_REBATE_BPS = 500;
     uint16 private constant DISPUTE_UPHELD_PENALTY_BPS = 1_000;
     uint256 private constant MINIMUM_PROVIDER_SCORE = 80;
     uint64 private constant VOTING_DELAY = 1;
@@ -87,9 +89,14 @@ contract PactCommerceTest is Test {
         assertEq(job.deliverable, deliverable);
         assertEq(job.attestation, attestation);
 
-        uint256 feeAmount = (BUDGET * PLATFORM_FEE_BPS) / 10_000;
-        assertEq(usdc.balanceOf(provider), BUDGET - feeAmount);
-        assertEq(usdc.balanceOf(treasury), feeAmount);
+        uint256 validatorAmount = (BUDGET * VALIDATOR_REWARD_BPS) / 10_000;
+        uint256 treasuryAmount = (BUDGET * PLATFORM_FEE_BPS) / 10_000;
+        uint256 issuerAmount = (BUDGET * ISSUER_REBATE_BPS) / 10_000;
+        uint256 providerAmount = BUDGET - validatorAmount - treasuryAmount - issuerAmount;
+        assertEq(usdc.balanceOf(provider), providerAmount);
+        assertEq(usdc.balanceOf(evaluator), validatorAmount);
+        assertEq(usdc.balanceOf(treasury), treasuryAmount);
+        assertEq(usdc.balanceOf(client), INITIAL_BALANCE - BUDGET + issuerAmount);
         assertEq(usdc.balanceOf(address(commerce)), 0);
     }
 
@@ -158,10 +165,16 @@ contract PactCommerceTest is Test {
         vm.prank(client);
         commerce.setBudget(jobId, BUDGET);
 
-        (uint256 providerAmount, uint256 feeAmount) = commerce.previewPayout(jobId);
+        (uint256 providerAmount, uint256 withheldAmount) = commerce.previewPayout(jobId);
+        (uint256 settlementProviderAmount, uint256 validatorAmount, uint256 treasuryAmount, uint256 issuerAmount) =
+            commerce.previewSettlement(jobId);
 
-        assertEq(feeAmount, (BUDGET * PLATFORM_FEE_BPS) / 10_000);
-        assertEq(providerAmount, BUDGET - feeAmount);
+        assertEq(providerAmount, settlementProviderAmount);
+        assertEq(validatorAmount, (BUDGET * VALIDATOR_REWARD_BPS) / 10_000);
+        assertEq(treasuryAmount, (BUDGET * PLATFORM_FEE_BPS) / 10_000);
+        assertEq(issuerAmount, (BUDGET * ISSUER_REBATE_BPS) / 10_000);
+        assertEq(withheldAmount, validatorAmount + treasuryAmount + issuerAmount);
+        assertEq(providerAmount, BUDGET - withheldAmount);
     }
 
     function testClientCanAssignEvaluatorLaterAndHooksReceiveOptParams() external {
@@ -351,14 +364,19 @@ contract PactCommerceTest is Test {
         _voteForAndExecuteProposal(proposalId);
 
         IPactCommerce.Job memory job = commerce.getJob(jobId);
-        uint256 feeAmount = (BUDGET * PLATFORM_FEE_BPS) / 10_000;
+        uint256 validatorAmount = (BUDGET * VALIDATOR_REWARD_BPS) / 10_000;
+        uint256 treasuryAmount = (BUDGET * PLATFORM_FEE_BPS) / 10_000;
+        uint256 issuerAmount = (BUDGET * ISSUER_REBATE_BPS) / 10_000;
+        uint256 providerAmount = BUDGET - validatorAmount - treasuryAmount - issuerAmount;
 
         assertEq(uint8(job.status), uint8(IPactCommerce.Status.Completed));
         assertEq(job.provider, provider);
         assertEq(job.evaluator, address(governanceEvaluator));
         assertEq(job.attestation, attestation);
-        assertEq(usdc.balanceOf(provider), BUDGET - feeAmount);
-        assertEq(usdc.balanceOf(treasury), feeAmount);
+        assertEq(usdc.balanceOf(provider), providerAmount);
+        assertEq(usdc.balanceOf(address(governance)), validatorAmount);
+        assertEq(usdc.balanceOf(treasury), treasuryAmount);
+        assertEq(usdc.balanceOf(client), INITIAL_BALANCE - BUDGET + issuerAmount);
     }
 
     function testApprovedEvaluatorHookBlocksUnapprovedAssignment() external {
@@ -436,13 +454,18 @@ contract PactCommerceTest is Test {
         _voteForAndExecuteProposal(proposalId);
 
         IPactCommerce.Job memory job = commerce.getJob(jobId);
-        uint256 feeAmount = (BUDGET * PLATFORM_FEE_BPS) / 10_000;
+        uint256 validatorAmount = (BUDGET * VALIDATOR_REWARD_BPS) / 10_000;
+        uint256 treasuryAmount = (BUDGET * PLATFORM_FEE_BPS) / 10_000;
+        uint256 issuerAmount = (BUDGET * ISSUER_REBATE_BPS) / 10_000;
+        uint256 providerAmount = BUDGET - validatorAmount - treasuryAmount - issuerAmount;
 
         assertEq(uint8(job.status), uint8(IPactCommerce.Status.Completed));
         assertEq(job.evaluator, address(governanceEvaluator));
         assertEq(job.attestation, attestation);
-        assertEq(usdc.balanceOf(provider), BUDGET - feeAmount);
-        assertEq(usdc.balanceOf(treasury), feeAmount);
+        assertEq(usdc.balanceOf(provider), providerAmount);
+        assertEq(usdc.balanceOf(address(governance)), validatorAmount);
+        assertEq(usdc.balanceOf(treasury), treasuryAmount);
+        assertEq(usdc.balanceOf(client), INITIAL_BALANCE - BUDGET + issuerAmount);
     }
 
     function testHookBlocksFundingUntilProviderMeetsReputationThreshold() external {
@@ -553,9 +576,17 @@ contract PactCommerceTest is Test {
         deterministicEvaluator.evaluate(jobId);
 
         IPactCommerce.Job memory job = commerce.getJob(jobId);
+        uint256 validatorAmount = (BUDGET * VALIDATOR_REWARD_BPS) / 10_000;
+        uint256 treasuryAmount = (BUDGET * PLATFORM_FEE_BPS) / 10_000;
+        uint256 issuerAmount = (BUDGET * ISSUER_REBATE_BPS) / 10_000;
+        uint256 providerAmount = BUDGET - validatorAmount - treasuryAmount - issuerAmount;
+
         assertEq(uint8(job.status), uint8(IPactCommerce.Status.Completed));
         assertEq(job.attestation, successAttestation);
-        assertEq(usdc.balanceOf(provider), BUDGET - ((BUDGET * PLATFORM_FEE_BPS) / 10_000));
+        assertEq(usdc.balanceOf(provider), providerAmount);
+        assertEq(usdc.balanceOf(address(this)), validatorAmount);
+        assertEq(usdc.balanceOf(treasury), treasuryAmount);
+        assertEq(usdc.balanceOf(client), INITIAL_BALANCE - BUDGET + issuerAmount);
     }
 
     function testDeterministicEvaluatorForwardsCompletionOptParamsIntoHooks() external {
@@ -646,12 +677,16 @@ contract PactCommerceTest is Test {
         commerce.complete(jobId, attestation, abi.encode("judge://decision"));
 
         IPactCommerce.Job memory job = commerce.getJob(jobId);
-        uint256 feeAmount = (BUDGET * PLATFORM_FEE_BPS) / 10_000;
+        uint256 validatorAmount = (BUDGET * VALIDATOR_REWARD_BPS) / 10_000;
+        uint256 treasuryAmount = (BUDGET * PLATFORM_FEE_BPS) / 10_000;
+        uint256 issuerAmount = (BUDGET * ISSUER_REBATE_BPS) / 10_000;
+        uint256 providerAmount = BUDGET - validatorAmount - treasuryAmount - issuerAmount;
 
         assertEq(uint8(job.status), uint8(IPactCommerce.Status.Completed));
         assertEq(job.attestation, attestation);
-        assertEq(usdc.balanceOf(provider), BUDGET - feeAmount);
-        assertEq(usdc.balanceOf(treasury), feeAmount);
+        assertEq(usdc.balanceOf(provider), providerAmount);
+        assertEq(usdc.balanceOf(treasury), treasuryAmount);
+        assertEq(usdc.balanceOf(client), INITIAL_BALANCE - BUDGET + validatorAmount + issuerAmount);
     }
 
     function testGovernanceEvaluatorCompletesSubmittedJobAfterProposalExecution() external {
@@ -671,12 +706,17 @@ contract PactCommerceTest is Test {
         _voteForAndExecuteProposal(proposalId);
 
         IPactCommerce.Job memory job = commerce.getJob(jobId);
-        uint256 feeAmount = (BUDGET * PLATFORM_FEE_BPS) / 10_000;
+        uint256 validatorAmount = (BUDGET * VALIDATOR_REWARD_BPS) / 10_000;
+        uint256 treasuryAmount = (BUDGET * PLATFORM_FEE_BPS) / 10_000;
+        uint256 issuerAmount = (BUDGET * ISSUER_REBATE_BPS) / 10_000;
+        uint256 providerAmount = BUDGET - validatorAmount - treasuryAmount - issuerAmount;
 
         assertEq(uint8(job.status), uint8(IPactCommerce.Status.Completed));
         assertEq(job.attestation, attestation);
-        assertEq(usdc.balanceOf(provider), BUDGET - feeAmount);
-        assertEq(usdc.balanceOf(treasury), feeAmount);
+        assertEq(usdc.balanceOf(provider), providerAmount);
+        assertEq(usdc.balanceOf(address(governance)), validatorAmount);
+        assertEq(usdc.balanceOf(treasury), treasuryAmount);
+        assertEq(usdc.balanceOf(client), INITIAL_BALANCE - BUDGET + issuerAmount);
         assertEq(reputationHook.lastBeforeSelector(), commerce.COMPLETE_SELECTOR());
         assertEq(reputationHook.lastAfterSelector(), commerce.COMPLETE_SELECTOR());
         assertEq(reputationHook.lastBeforeDataHash(), keccak256(abi.encode(attestation, evaluatorOptParams)));
@@ -781,7 +821,7 @@ contract PactCommerceTest is Test {
             jobId, keccak256("settlement"), keccak256("receipt://2"), keccak256("evidence://jury"), DISPUTE_BOND
         );
 
-        commerce.resolveDispute(disputeId, true, resolution);
+        commerce.resolveDispute(disputeId, true, IPactCommerce.Status.Rejected, resolution);
 
         uint256 penaltyAmount = (DISPUTE_BOND * DISPUTE_UPHELD_PENALTY_BPS) / 10_000;
         uint256 expectedRefund = DISPUTE_BOND - penaltyAmount;
@@ -792,6 +832,7 @@ contract PactCommerceTest is Test {
         IPactCommerce.Job memory job = commerce.getJob(jobId);
         assertEq(uint8(dispute.status), uint8(IPactCommerce.DisputeStatus.Upheld));
         assertEq(dispute.resolution, resolution);
+        assertEq(uint8(job.status), uint8(IPactCommerce.Status.Rejected));
         assertEq(job.attestation, resolution);
         assertEq(usdc.balanceOf(outsider), INITIAL_BALANCE - DISPUTE_BOND + expectedRefund);
         assertEq(usdc.balanceOf(address(this)), expectedJury);
@@ -812,17 +853,42 @@ contract PactCommerceTest is Test {
             jobId, keccak256("rejection"), keccak256("decision://1"), keccak256("evidence://appeal"), DISPUTE_BOND
         );
 
-        commerce.resolveDispute(disputeId, false, resolution);
+        commerce.resolveDispute(disputeId, false, IPactCommerce.Status.Completed, resolution);
 
         uint256 expectedJury = DISPUTE_BOND / 2;
         uint256 expectedProtocol = DISPUTE_BOND - expectedJury;
 
         IPactCommerce.Dispute memory dispute = commerce.getDispute(disputeId);
+        IPactCommerce.Job memory job = commerce.getJob(jobId);
         assertEq(uint8(dispute.status), uint8(IPactCommerce.DisputeStatus.Rejected));
         assertEq(dispute.resolution, resolution);
+        assertEq(uint8(job.status), uint8(IPactCommerce.Status.Rejected));
+        assertEq(job.attestation, reason);
         assertEq(usdc.balanceOf(address(this)), expectedJury);
         assertEq(usdc.balanceOf(treasury), expectedProtocol);
         assertEq(usdc.balanceOf(address(commerce)), 0);
+    }
+
+    function testResolveDisputeUpheldRequiresExplicitTerminalStatus() external {
+        uint256 jobId = _createAndFundJob(provider, evaluator, address(0), BUDGET, 7 days);
+        bytes32 deliverable = keccak256("deliverable:invalid-final-status");
+
+        vm.prank(provider);
+        commerce.submit(jobId, deliverable);
+        vm.prank(evaluator);
+        commerce.complete(jobId, keccak256("attestation:approved"));
+
+        vm.prank(outsider);
+        uint256 disputeId = commerce.raiseDispute(
+            jobId,
+            keccak256("settlement"),
+            keccak256("receipt://invalid-final-status"),
+            keccak256("evidence://jury"),
+            DISPUTE_BOND
+        );
+
+        vm.expectRevert(PactCommerce.InvalidDisputeResolutionStatus.selector);
+        commerce.resolveDispute(disputeId, true, IPactCommerce.Status.Funded, keccak256("jury:invalid-status"));
     }
 
     function testRaiseDisputeRequiresTerminalJobAndExactBond() external {
@@ -890,7 +956,8 @@ contract PactCommerceTest is Test {
 
         commerce.transferOwnership(address(governance));
 
-        uint256 proposalId = _createGovernanceDisputeProposal(disputeId, true, resolution);
+        uint256 proposalId =
+            _createGovernanceDisputeProposal(disputeId, true, IPactCommerce.Status.Rejected, resolution);
         _voteForAndExecuteProposal(proposalId);
 
         uint256 penaltyAmount = (DISPUTE_BOND * DISPUTE_UPHELD_PENALTY_BPS) / 10_000;
@@ -902,6 +969,7 @@ contract PactCommerceTest is Test {
         IPactCommerce.Job memory job = commerce.getJob(jobId);
         assertEq(uint8(dispute.status), uint8(IPactCommerce.DisputeStatus.Upheld));
         assertEq(dispute.resolution, resolution);
+        assertEq(uint8(job.status), uint8(IPactCommerce.Status.Rejected));
         assertEq(job.attestation, resolution);
         assertEq(usdc.balanceOf(outsider), INITIAL_BALANCE - DISPUTE_BOND + expectedRefund);
         assertEq(usdc.balanceOf(address(governance)), expectedJury);
@@ -944,13 +1012,15 @@ contract PactCommerceTest is Test {
         );
     }
 
-    function _createGovernanceDisputeProposal(uint256 disputeId, bool upheld, bytes32 resolution)
-        internal
-        returns (uint256 proposalId)
-    {
+    function _createGovernanceDisputeProposal(
+        uint256 disputeId,
+        bool upheld,
+        IPactCommerce.Status finalStatus,
+        bytes32 resolution
+    ) internal returns (uint256 proposalId) {
         vm.prank(voterA);
         proposalId = governance.createCommerceDisputeProposal(
-            address(commerce), disputeId, upheld, resolution, "governance dispute resolution"
+            address(commerce), disputeId, upheld, finalStatus, resolution, "governance dispute resolution"
         );
     }
 

@@ -83,7 +83,8 @@ interface IPactCommerce {
         uint256 expectedBondAmount
     ) external returns (uint256 disputeId);
 
-    function resolveDispute(uint256 disputeId, bool upheld, bytes32 resolution) external;
+    function resolveDispute(uint256 disputeId, bool upheld, Status finalStatus, bytes32 resolution) external;
+    function expireDispute(uint256 disputeId, bytes32 resolution) external;
 
     function claimRefund(uint256 jobId) external;
     function getJob(uint256 jobId) external view returns (Job memory);
@@ -92,5 +93,9 @@ interface IPactCommerce {
     function disputeBondAmount() external view returns (uint256);
     function getNextJobId() external view returns (uint256);
     function getNextDisputeId() external view returns (uint256);
-    function previewPayout(uint256 jobId) external view returns (uint256 providerAmount, uint256 feeAmount);
+    function previewPayout(uint256 jobId) external view returns (uint256 providerAmount, uint256 withheldAmount);
+    function previewSettlement(uint256 jobId)
+        external
+        view
+        returns (uint256 providerAmount, uint256 validatorAmount, uint256 treasuryAmount, uint256 issuerAmount);
 }
