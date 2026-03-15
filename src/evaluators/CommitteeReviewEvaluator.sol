@@ -31,6 +31,7 @@ contract CommitteeReviewEvaluator is IEvaluatorSettlementRecipient, Ownable, Ree
         bytes32 successAttestation;
         bytes32 failureAttestation;
         bytes32 expectedOptParamsHash;
+        uint64 reviewDeadline;
         uint32 approvalThreshold;
         uint32 rejectionThreshold;
         bool requireOptParamsHash;
@@ -57,6 +58,7 @@ contract CommitteeReviewEvaluator is IEvaluatorSettlementRecipient, Ownable, Ree
     address public immutable slashRecipient;
     uint256 public immutable minimumStake;
     uint256 public immutable disputeWindow;
+    uint256 public immutable reviewPeriod;
     uint16 public immutable slashingBps;
     uint8 public immutable slashAfterDisagreements;
 
@@ -74,6 +76,7 @@ contract CommitteeReviewEvaluator is IEvaluatorSettlementRecipient, Ownable, Ree
         uint256 indexed jobId,
         bytes32 successAttestation,
         bytes32 failureAttestation,
+        uint64 reviewDeadline,
         uint32 approvalThreshold,
         uint32 rejectionThreshold,
         bool requireOptParamsHash,
@@ -130,6 +133,7 @@ contract CommitteeReviewEvaluator is IEvaluatorSettlementRecipient, Ownable, Ree
     error JobNotResolved();
     error JobAccountingAlreadyFinalized();
     error JobAccountingNotReady();
+    error ReviewDeadlineNotReached(uint256 reviewDeadline);
     error InvalidVote();
     error AlreadyVoted();
     error InvalidJobStatus();
@@ -140,6 +144,7 @@ contract CommitteeReviewEvaluator is IEvaluatorSettlementRecipient, Ownable, Ree
         address settlementTokenAddress,
         uint256 minimumStakeAmount,
         uint256 disputeWindowSeconds,
+        uint256 reviewPeriodSeconds,
         uint16 slashingBpsValue,
         uint8 slashAfterDisagreementsValue,
         address slashRecipientAddress
@@ -150,8 +155,8 @@ contract CommitteeReviewEvaluator is IEvaluatorSettlementRecipient, Ownable, Ree
             revert ZeroAddress();
         }
         if (
-            minimumStakeAmount == 0 || disputeWindowSeconds == 0 || slashingBpsValue == 0 || slashingBpsValue > 10_000
-                || slashAfterDisagreementsValue == 0
+            minimumStakeAmount == 0 || disputeWindowSeconds == 0 || reviewPeriodSeconds == 0 || slashingBpsValue == 0
+                || slashingBpsValue > 10_000 || slashAfterDisagreementsValue == 0
         ) {
             revert InvalidConfig();
         }
@@ -160,6 +165,7 @@ contract CommitteeReviewEvaluator is IEvaluatorSettlementRecipient, Ownable, Ree
         settlementToken = IERC20(settlementTokenAddress);
         minimumStake = minimumStakeAmount;
         disputeWindow = disputeWindowSeconds;
+        reviewPeriod = reviewPeriodSeconds;
         slashingBps = slashingBpsValue;
         slashAfterDisagreements = slashAfterDisagreementsValue;
         slashRecipient = slashRecipientAddress;
@@ -241,6 +247,18 @@ contract CommitteeReviewEvaluator is IEvaluatorSettlementRecipient, Ownable, Ree
         _castVote(jobId, choice, optParams);
     }
 
+    function finalizeDeadlockedJob(uint256 jobId) external nonReentrant {
+        JobConfig storage config = jobConfigs[jobId];
+        if (config.approvalThreshold == 0 || config.rejectionThreshold == 0) revert JobNotConfigured();
+        if (config.resolved) revert JobAlreadyResolved();
+        if (block.timestamp < config.reviewDeadline) revert ReviewDeadlineNotReached(config.reviewDeadline);
+
+        IPactCommerce.Job memory job = commerce.getJob(jobId);
+        if (job.status != IPactCommerce.Status.Submitted) revert InvalidJobStatus();
+
+        _resolve(jobId, VoteChoice.Reject, config.failureAttestation, "", keccak256(""));
+    }
+
     function finalizeJobAccounting(uint256 jobId) external nonReentrant {
         JobResolution storage resolution = jobResolutions[jobId];
         if (resolution.resolvedAt == 0) revert JobNotResolved();
@@ -302,6 +320,7 @@ contract CommitteeReviewEvaluator is IEvaluatorSettlementRecipient, Ownable, Ree
         config.successAttestation = successAttestation;
         config.failureAttestation = failureAttestation;
         config.expectedOptParamsHash = expectedOptParamsHash;
+        config.reviewDeadline = uint64(block.timestamp + reviewPeriod);
         config.approvalThreshold = approvalThreshold;
         config.rejectionThreshold = rejectionThreshold;
         config.requireOptParamsHash = requireOptParamsHash;
@@ -315,6 +334,7 @@ contract CommitteeReviewEvaluator is IEvaluatorSettlementRecipient, Ownable, Ree
             jobId,
             successAttestation,
             failureAttestation,
+            config.reviewDeadline,
             approvalThreshold,
             rejectionThreshold,
             requireOptParamsHash,

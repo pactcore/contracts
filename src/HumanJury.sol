@@ -44,6 +44,7 @@ contract HumanJury is Ownable, ReentrancyGuard {
     IERC20 public immutable settlementToken;
     uint16 public immutable minimumJurorReputation;
     uint8 public immutable panelSize;
+    uint256 public immutable reviewDeadlineDuration;
 
     mapping(address juror => JurorAccount) public jurors;
     mapping(uint256 disputeId => ReviewConfig) public reviews;
@@ -93,22 +94,28 @@ contract HumanJury is Ownable, ReentrancyGuard {
     error AlreadyVoted();
     error InvalidAmount();
     error InsufficientEligibleJurors(uint256 eligible, uint256 required);
+    error ReviewDeadlineNotReached();
+
+    event ReviewExpired(uint256 indexed disputeId, uint64 deadline, uint8 upholdCount, uint8 rejectCount);
 
     constructor(
         address commerceAddress,
         address settlementTokenAddress,
         uint16 minimumJurorReputationValue,
-        uint8 panelSizeValue
+        uint8 panelSizeValue,
+        uint256 reviewDeadlineDurationSeconds
     ) Ownable(msg.sender) {
         if (commerceAddress == address(0) || settlementTokenAddress == address(0)) {
             revert ZeroAddress();
         }
         if (panelSizeValue < 5 || panelSizeValue > 11 || panelSizeValue % 2 == 0) revert InvalidConfig();
+        if (reviewDeadlineDurationSeconds == 0) revert InvalidConfig();
 
         commerce = IPactCommerce(commerceAddress);
         settlementToken = IERC20(settlementTokenAddress);
         minimumJurorReputation = minimumJurorReputationValue;
         panelSize = panelSizeValue;
+        reviewDeadlineDuration = reviewDeadlineDurationSeconds;
     }
 
     function configureJuror(address juror, uint16 reputation, bool active) external onlyOwner {
@@ -126,6 +133,12 @@ contract HumanJury is Ownable, ReentrancyGuard {
         emit JurorConfigured(juror, reputation, active, account.pendingPanels);
     }
 
+    /// @notice Create a jury review panel for an open dispute.
+    /// @dev Trust assumption: The owner/operator is trusted for jury selection timing in v1.
+    /// Juror selection uses block.prevrandao as entropy, which means the review creator
+    /// (owner) could theoretically wait for a favorable block before calling this function.
+    /// This is acceptable because owner == governance in the current trust model.
+    /// Future versions should use commit/reveal or VRF-based randomness for stronger guarantees.
     function createReview(
         uint256 disputeId,
         IPactCommerce.Status proposedFinalStatus,
@@ -211,6 +224,24 @@ contract HumanJury is Ownable, ReentrancyGuard {
         settlementToken.safeTransfer(msg.sender, amount);
 
         emit RewardsClaimed(msg.sender, amount);
+    }
+
+    /// @notice Expire a review that has passed its deadline without reaching majority.
+    /// Defaults to rejecting the dispute (upholding the original decision).
+    /// Anyone may call this after the deadline.
+    function expireReview(uint256 disputeId) external nonReentrant {
+        ReviewConfig storage review = reviews[disputeId];
+        if (review.createdAt == 0) revert ReviewNotFound();
+        if (review.resolved) revert ReviewAlreadyResolved();
+
+        uint64 deadline = uint64(review.createdAt + reviewDeadlineDuration);
+        if (block.timestamp < deadline) revert ReviewDeadlineNotReached();
+
+        ReviewTally storage tally = tallies[disputeId];
+        emit ReviewExpired(disputeId, deadline, tally.upholdCount, tally.rejectCount);
+
+        // Default to rejecting the dispute (uphold original decision) on expiry
+        _resolveReview(disputeId, false);
     }
 
     function getPanel(uint256 disputeId) external view returns (address[] memory) {

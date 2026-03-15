@@ -464,6 +464,37 @@ contract PactCommerce is IPactCommerce, Ownable, ReentrancyGuard {
         );
     }
 
+    /// @notice Expire an open dispute, returning the bond to the challenger.
+    /// Treats the dispute as rejected (original decision upheld). Anyone may call this.
+    function expireDispute(uint256 disputeId, bytes32 resolution) external nonReentrant {
+        Dispute storage dispute = _getDispute(disputeId);
+        if (dispute.status != DisputeStatus.Open) revert DisputeNotOpen();
+
+        dispute.status = DisputeStatus.Rejected;
+        dispute.resolution = resolution;
+
+        // Return full bond to challenger on expiry (no penalty for liveness failure)
+        if (dispute.bondAmount > 0) {
+            paymentToken.safeTransfer(dispute.challenger, dispute.bondAmount);
+        }
+
+        Job storage job = _getJob(dispute.jobId);
+
+        emit DisputeResolved(
+            disputeId,
+            dispute.jobId,
+            false,
+            job.status,
+            resolution,
+            msg.sender,
+            address(0),
+            address(0),
+            dispute.bondAmount,
+            0,
+            0
+        );
+    }
+
     function claimRefund(uint256 jobId) external nonReentrant {
         Job storage job = _getJob(jobId);
         if (job.status != Status.Funded && job.status != Status.Submitted) revert InvalidStatus();

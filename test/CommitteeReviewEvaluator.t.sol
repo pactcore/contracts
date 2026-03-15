@@ -32,6 +32,7 @@ contract CommitteeReviewEvaluatorTest is Test {
     uint16 private constant ISSUER_REBATE_BPS = 500;
     uint16 private constant SLASHING_BPS = 1_000;
     uint8 private constant SLASH_AFTER_DISAGREEMENTS = 3;
+    uint256 private constant REVIEW_DEADLINE = 3 days;
 
     function setUp() external {
         usdc = new MockUSDC();
@@ -41,6 +42,7 @@ contract CommitteeReviewEvaluatorTest is Test {
             address(usdc),
             MINIMUM_STAKE,
             DISPUTE_WINDOW,
+            REVIEW_DEADLINE,
             SLASHING_BPS,
             SLASH_AFTER_DISAGREEMENTS,
             treasury
@@ -326,6 +328,87 @@ contract CommitteeReviewEvaluatorTest is Test {
         );
         vm.prank(validatorA);
         committeeEvaluator.castVote(jobId, CommitteeReviewEvaluator.VoteChoice.Approve, wrongOptParams);
+    }
+
+    function testSplitVoteDeadlockCanBeResolvedAfterDeadline() external {
+        uint256 jobId = _createAndFundJob(7 days);
+        bytes32 deliverable = keccak256("deliverable:split-vote");
+        bytes32 successAttestation = keccak256("attestation:split-approved");
+        bytes32 failureAttestation = keccak256("attestation:split-rejected");
+
+        vm.prank(provider);
+        commerce.submit(jobId, deliverable);
+
+        uint256 configTimestamp = block.timestamp;
+        committeeEvaluator.configureJob(jobId, successAttestation, failureAttestation, 2, 2);
+
+        // 1 approve, 1 reject, 1 uncertain => deadlock
+        vm.prank(validatorA);
+        committeeEvaluator.castVote(jobId, CommitteeReviewEvaluator.VoteChoice.Approve);
+
+        vm.prank(validatorB);
+        committeeEvaluator.castVote(jobId, CommitteeReviewEvaluator.VoteChoice.Reject);
+
+        vm.prank(validatorC);
+        committeeEvaluator.castVote(jobId, CommitteeReviewEvaluator.VoteChoice.Uncertain);
+
+        // Job should still be Submitted (no threshold reached)
+        IPactCommerce.Job memory job = commerce.getJob(jobId);
+        assertEq(uint8(job.status), uint8(IPactCommerce.Status.Submitted));
+
+        // Cannot finalize before deadline
+        uint256 expectedDeadline = configTimestamp + REVIEW_DEADLINE;
+        vm.expectRevert(
+            abi.encodeWithSelector(CommitteeReviewEvaluator.ReviewDeadlineNotReached.selector, expectedDeadline)
+        );
+        committeeEvaluator.finalizeDeadlockedJob(jobId);
+
+        // Warp past deadline
+        vm.warp(expectedDeadline + 1);
+        committeeEvaluator.finalizeDeadlockedJob(jobId);
+
+        // Job should be Rejected (deadlock default)
+        job = commerce.getJob(jobId);
+        assertEq(uint8(job.status), uint8(IPactCommerce.Status.Rejected));
+        assertEq(job.attestation, failureAttestation);
+
+        // Client refunded
+        assertEq(usdc.balanceOf(client), INITIAL_BALANCE);
+
+        // Validators can finalize accounting and unstake
+        vm.warp(block.timestamp + DISPUTE_WINDOW + 1);
+        committeeEvaluator.finalizeJobAccounting(jobId);
+
+        vm.prank(validatorA);
+        committeeEvaluator.unstake(1);
+    }
+
+    function testAllUncertainVotesDeadlockResolvedByTimeout() external {
+        uint256 jobId = _createAndFundJob(7 days);
+        bytes32 deliverable = keccak256("deliverable:all-uncertain");
+        bytes32 successAttestation = keccak256("attestation:all-uncertain-approved");
+        bytes32 failureAttestation = keccak256("attestation:all-uncertain-rejected");
+
+        vm.prank(provider);
+        commerce.submit(jobId, deliverable);
+
+        uint256 configTs = block.timestamp;
+        committeeEvaluator.configureJob(jobId, successAttestation, failureAttestation, 2, 2);
+
+        vm.prank(validatorA);
+        committeeEvaluator.castVote(jobId, CommitteeReviewEvaluator.VoteChoice.Uncertain);
+
+        vm.prank(validatorB);
+        committeeEvaluator.castVote(jobId, CommitteeReviewEvaluator.VoteChoice.Uncertain);
+
+        vm.prank(validatorC);
+        committeeEvaluator.castVote(jobId, CommitteeReviewEvaluator.VoteChoice.Uncertain);
+
+        vm.warp(configTs + REVIEW_DEADLINE + 1);
+        committeeEvaluator.finalizeDeadlockedJob(jobId);
+
+        IPactCommerce.Job memory job = commerce.getJob(jobId);
+        assertEq(uint8(job.status), uint8(IPactCommerce.Status.Rejected));
     }
 
     function _approveAndStake(address validator, uint256 amount) internal {

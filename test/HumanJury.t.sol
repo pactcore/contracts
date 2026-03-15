@@ -42,6 +42,8 @@ contract HumanJuryTest is Test {
     uint8 private constant SLASH_AFTER_DISAGREEMENTS = 3;
     uint16 private constant MINIMUM_JUROR_REPUTATION = 80;
     uint8 private constant JURY_PANEL_SIZE = 5;
+    uint256 private constant REVIEW_DEADLINE_DURATION = 7 days;
+    uint256 private constant COMMITTEE_REVIEW_DEADLINE = 3 days;
 
     function setUp() external {
         usdc = new MockUSDC();
@@ -51,11 +53,14 @@ contract HumanJuryTest is Test {
             address(usdc),
             MINIMUM_STAKE,
             DISPUTE_WINDOW,
+            COMMITTEE_REVIEW_DEADLINE,
             SLASHING_BPS,
             SLASH_AFTER_DISAGREEMENTS,
             treasury
         );
-        humanJury = new HumanJury(address(commerce), address(usdc), MINIMUM_JUROR_REPUTATION, JURY_PANEL_SIZE);
+        humanJury = new HumanJury(
+            address(commerce), address(usdc), MINIMUM_JUROR_REPUTATION, JURY_PANEL_SIZE, REVIEW_DEADLINE_DURATION
+        );
 
         usdc.mint(client, INITIAL_BALANCE);
         usdc.mint(challenger, CHALLENGER_BANKROLL);
@@ -227,6 +232,111 @@ contract HumanJuryTest is Test {
         vm.prank(panel[1]);
         humanJury.claimRewards();
         assertEq(usdc.balanceOf(panel[1]), jurorBalanceBefore + secondJurorRewards);
+    }
+
+    function testExpiredReviewResolvesDisputeAsRejectedAfterDeadline() external {
+        uint256 jobId = _createAndFundDirectReviewJob(7 days);
+        bytes32 deliverable = keccak256("deliverable:expired-review");
+        bytes32 completionAttestation = keccak256("attestation:completed-expired-review");
+
+        vm.prank(provider);
+        commerce.submit(jobId, deliverable);
+
+        vm.prank(evaluator);
+        commerce.complete(jobId, completionAttestation);
+
+        uint256 disputeBond = commerce.disputeBondAmount();
+
+        vm.prank(challenger);
+        uint256 disputeId = commerce.raiseDispute(
+            jobId,
+            keccak256("human-review"),
+            keccak256("completion://expired-review"),
+            keccak256("evidence://expired-review"),
+            disputeBond
+        );
+
+        commerce.transferOwnership(address(humanJury));
+
+        humanJury.createReview(
+            disputeId,
+            IPactCommerce.Status.Rejected,
+            keccak256("upheld-resolution"),
+            keccak256("rejected-resolution-expired")
+        );
+
+        address[] memory panel = humanJury.getPanel(disputeId);
+        assertEq(panel.length, JURY_PANEL_SIZE);
+
+        // Only 2 jurors vote (not enough for majority of 3)
+        vm.prank(panel[0]);
+        humanJury.castVote(disputeId, HumanJury.VoteChoice.Uphold);
+
+        vm.prank(panel[1]);
+        humanJury.castVote(disputeId, HumanJury.VoteChoice.Reject);
+
+        // Cannot expire before deadline
+        vm.expectRevert(HumanJury.ReviewDeadlineNotReached.selector);
+        humanJury.expireReview(disputeId);
+
+        // Warp past deadline
+        vm.warp(block.timestamp + REVIEW_DEADLINE_DURATION + 1);
+        humanJury.expireReview(disputeId);
+
+        // Dispute should be rejected (upholding original decision)
+        IPactCommerce.Dispute memory dispute = commerce.getDispute(disputeId);
+        assertEq(uint8(dispute.status), uint8(IPactCommerce.DisputeStatus.Rejected));
+
+        // Original job status preserved
+        IPactCommerce.Job memory job = commerce.getJob(jobId);
+        assertEq(uint8(job.status), uint8(IPactCommerce.Status.Completed));
+        assertEq(job.attestation, completionAttestation);
+
+        // Jurors can have pending panels released
+        (, uint32 pendingPanelsA,,) = humanJury.jurors(panel[0]);
+        assertEq(pendingPanelsA, 0);
+    }
+
+    function testCannotExpireAlreadyResolvedReview() external {
+        uint256 jobId = _createAndFundDirectReviewJob(7 days);
+        bytes32 deliverable = keccak256("deliverable:resolved-then-expire");
+        bytes32 completionAttestation = keccak256("attestation:completed-resolved-then-expire");
+
+        vm.prank(provider);
+        commerce.submit(jobId, deliverable);
+
+        vm.prank(evaluator);
+        commerce.complete(jobId, completionAttestation);
+
+        uint256 disputeBond = commerce.disputeBondAmount();
+
+        vm.prank(challenger);
+        uint256 disputeId = commerce.raiseDispute(
+            jobId,
+            keccak256("human-review"),
+            keccak256("completion://resolved-then-expire"),
+            keccak256("evidence://resolved-then-expire"),
+            disputeBond
+        );
+
+        commerce.transferOwnership(address(humanJury));
+
+        humanJury.createReview(disputeId, IPactCommerce.Status.Rejected, keccak256("upheld"), keccak256("rejected"));
+
+        address[] memory panel = humanJury.getPanel(disputeId);
+
+        // Reach majority (3 uphold votes)
+        vm.prank(panel[0]);
+        humanJury.castVote(disputeId, HumanJury.VoteChoice.Uphold);
+        vm.prank(panel[1]);
+        humanJury.castVote(disputeId, HumanJury.VoteChoice.Uphold);
+        vm.prank(panel[2]);
+        humanJury.castVote(disputeId, HumanJury.VoteChoice.Uphold);
+
+        // Already resolved, cannot expire
+        vm.warp(block.timestamp + REVIEW_DEADLINE_DURATION + 1);
+        vm.expectRevert(HumanJury.ReviewAlreadyResolved.selector);
+        humanJury.expireReview(disputeId);
     }
 
     function _approveAndStake(address validator, uint256 amount) internal {

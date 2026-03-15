@@ -84,6 +84,7 @@ interface IPactCommerce {
     ) external returns (uint256 disputeId);
 
     function resolveDispute(uint256 disputeId, bool upheld, Status finalStatus, bytes32 resolution) external;
+    function expireDispute(uint256 disputeId, bytes32 resolution) external;
 
     function claimRefund(uint256 jobId) external;
     function getJob(uint256 jobId) external view returns (Job memory);
