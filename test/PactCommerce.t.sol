@@ -799,6 +799,7 @@ contract PactCommerceTest is Test {
         assertEq(dispute.subjectRef, subjectRef);
         assertEq(dispute.evidenceHash, evidenceHash);
         assertEq(dispute.bondAmount, DISPUTE_BOND);
+        assertEq(dispute.openedAt, block.timestamp);
         assertEq(uint8(dispute.status), uint8(IPactCommerce.DisputeStatus.Open));
         assertEq(commerce.getDisputeForJob(jobId), disputeId);
         assertEq(usdc.balanceOf(address(commerce)), DISPUTE_BOND);
@@ -889,6 +890,35 @@ contract PactCommerceTest is Test {
 
         vm.expectRevert(PactCommerce.InvalidDisputeResolutionStatus.selector);
         commerce.resolveDispute(disputeId, true, IPactCommerce.Status.Funded, keccak256("jury:invalid-status"));
+    }
+
+    function testExpireDisputeRequiresDeadlineAndRefundsBondAfterLivenessWindow() external {
+        uint256 jobId = _createAndFundJob(provider, evaluator, address(0), BUDGET, 7 days);
+        bytes32 reason = keccak256("attestation:expired-dispute");
+        bytes32 resolution = keccak256("jury:expired-liveness-window");
+
+        vm.prank(evaluator);
+        commerce.reject(jobId, reason);
+
+        vm.prank(outsider);
+        uint256 disputeId = commerce.raiseDispute(
+            jobId, keccak256("rejection"), keccak256("decision://expiry"), keccak256("evidence://timeout"), DISPUTE_BOND
+        );
+
+        vm.expectRevert(PactCommerce.DisputeDeadlineNotReached.selector);
+        commerce.expireDispute(disputeId, resolution);
+
+        vm.warp(block.timestamp + commerce.disputeDeadlineDuration());
+        commerce.expireDispute(disputeId, resolution);
+
+        IPactCommerce.Dispute memory dispute = commerce.getDispute(disputeId);
+        IPactCommerce.Job memory job = commerce.getJob(jobId);
+        assertEq(uint8(dispute.status), uint8(IPactCommerce.DisputeStatus.Rejected));
+        assertEq(dispute.resolution, resolution);
+        assertEq(uint8(job.status), uint8(IPactCommerce.Status.Rejected));
+        assertEq(job.attestation, reason);
+        assertEq(usdc.balanceOf(outsider), INITIAL_BALANCE);
+        assertEq(usdc.balanceOf(address(commerce)), 0);
     }
 
     function testRaiseDisputeRequiresTerminalJobAndExactBond() external {

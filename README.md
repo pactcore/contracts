@@ -36,7 +36,7 @@ Purpose:
 - Implements the ERC-8183 job lifecycle: `Open -> Funded -> Submitted -> Terminal`.
 - Escrows a single ERC-20 payment token per contract and settles deterministically.
 - Settles completions with the legacy PACT economics split: provider / validator / treasury / issuer = 85 / 5 / 5 / 5 by default when treasury fee is configured to 5%.
-- Adds a dispute bond lane for terminal jobs so jury/governance review can be modeled without reopening escrow state, including challenger slashing splits for upheld vs. rejected disputes and explicit terminal-status overrides for upheld appeals.
+- Adds a dispute bond lane for terminal jobs so jury/governance review can be modeled without reopening escrow state, including challenger slashing splits for upheld vs. rejected disputes, explicit terminal-status overrides for upheld appeals, and a deadline before unresolved disputes can expire back to the challenger.
 - Stores onchain job records: description, deliverable reference, evaluator attestation, and terminal status.
 - Allows evaluator assignment or replacement while a job remains `Open`, including jobs created without an evaluator.
 - Exposes the standard hook surface around `setProvider`, `setEvaluator`, `setBudget`, `fund`, `submit`, `complete`, and `reject`.
@@ -60,7 +60,8 @@ Core lifecycle:
 7. `complete(jobId, reason, optParams)` or `reject(jobId, reason, optParams)`
 8. `raiseDispute(jobId, subjectType, subjectRef, evidenceHash, expectedBondAmount)` for terminal-state jury escalation
 9. `resolveDispute(disputeId, upheld, finalStatus, resolution)` by the contract owner / governance authority, applying the dispute-bond slashing split in-place and updating the final terminal job status for upheld appeals
-10. `claimRefund(jobId)` after expiry from `Funded` or `Submitted`
+10. `expireDispute(disputeId, resolution)` after the dispute liveness deadline to return the full bond to the challenger when review stalls
+11. `claimRefund(jobId)` after expiry from `Funded` or `Submitted`
 
 Events:
 - `JobCreated`
@@ -121,8 +122,9 @@ File: `src/evaluators/CommitteeReviewEvaluator.sol`
 
 Purpose:
 - Adds an ERC-8183-compatible evaluator contract for Layer-2 agent-validator review instead of a single judge address.
-- Lets validators stake the settlement token, cast `Approve` / `Reject` / `Uncertain` votes, and resolve a submitted job once an approval or rejection threshold is met.
-- Routes the validator settlement share into the evaluator contract, then finalizes validator rewards only after either the committee dispute window expires or a terminal `raiseDispute(...)` challenge is resolved.
+- Pseudo-randomly samples a per-job validator committee from the active staker set with owner-managed reputation weights, exposes the selected panel onchain, and rejects votes from non-selected validators.
+- Lets selected validators stake the settlement token, cast `Approve` / `Reject` / `Uncertain` votes, and resolve a submitted job once an approval or rejection threshold is met.
+- Routes the validator settlement share into the evaluator contract, rejects votes when a validator's stake cannot economically cover the job's validator reward share, and only finalizes validator rewards after either the committee dispute window expires or a terminal `raiseDispute(...)` challenge is resolved.
 - Tracks consecutive deviations from the final committee-or-jury outcome and slashes validator stake after a configurable number of disagreements, so jury/governance review can override committee-majority accounting instead of merely annotating it.
 - Locks validator unstaking while they still have unresolved committee jobs, preserving slashable stake until the whitepaper-style appeal lane finishes.
 - Can optionally bind votes to the hash of opaque evaluator `optParams`, so receipt bundles or evidence payloads stay hash-checked all the way into settlement.
@@ -182,7 +184,7 @@ The rest of the repository remains unchanged:
 - rollback when an `afterAction` policy hook rejects settlement
 - deterministic evaluator completion and rejection paths, including forwarded opaque evaluation params, hash-bound proof bundle checks, and one-shot expectation consumption
 
-`test/CommitteeReviewEvaluator.t.sol` covers committee approval and rejection flows, dispute-window gating, jury/dispute overrides of validator accounting, reward splitting across aligned validators, opt-params hash binding, and slashing after three consecutive deviations.
+`test/CommitteeReviewEvaluator.t.sol` covers committee approval and rejection flows, reputation-weighted sampled-committee membership enforcement, active-validator capacity checks, dispute-window gating, jury/dispute overrides of validator accounting, reward splitting across aligned validators, opt-params hash binding, and slashing after three consecutive deviations.
 
 `test/HumanJury.t.sol` covers high-reputation jury-panel selection, low-reputation juror exclusion, upheld-vs-rejected dispute outcomes, jury reward distribution, and the bridge from committee review into final jury accounting.
 

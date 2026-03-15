@@ -15,6 +15,7 @@ contract PactCommerce is IPactCommerce, Ownable, ReentrancyGuard {
 
     uint256 public constant HOOK_GAS_LIMIT = 500_000;
     uint256 public constant DEFAULT_DISPUTE_BOND_AMOUNT = 100e6;
+    uint256 public constant DEFAULT_DISPUTE_DEADLINE_DURATION = 7 days;
     uint16 public constant BPS_DENOMINATOR = 10_000;
     uint16 public constant DEFAULT_UPHELD_DISPUTE_PENALTY_BPS = 1_000;
     uint16 public constant DEFAULT_VALIDATOR_REWARD_BPS = 500;
@@ -33,6 +34,7 @@ contract PactCommerce is IPactCommerce, Ownable, ReentrancyGuard {
     uint16 public immutable platformFeeBps;
     uint16 public immutable upheldDisputePenaltyBps;
     uint256 public immutable disputeBondAmount;
+    uint256 public immutable disputeDeadlineDuration;
 
     uint256 private nextJobId = 1;
     uint256 private nextDisputeId = 1;
@@ -109,6 +111,7 @@ contract PactCommerce is IPactCommerce, Ownable, ReentrancyGuard {
     error DisputeNotFound();
     error DisputeAlreadyExists();
     error DisputeNotOpen();
+    error DisputeDeadlineNotReached();
     error InvalidDisputeBond();
     error InvalidDisputeResolutionStatus();
 
@@ -122,6 +125,7 @@ contract PactCommerce is IPactCommerce, Ownable, ReentrancyGuard {
         platformFeeBps = feeBps;
         upheldDisputePenaltyBps = DEFAULT_UPHELD_DISPUTE_PENALTY_BPS;
         disputeBondAmount = DEFAULT_DISPUTE_BOND_AMOUNT;
+        disputeDeadlineDuration = DEFAULT_DISPUTE_DEADLINE_DURATION;
     }
 
     function createJob(address provider, address evaluator, uint256 expiredAt, string calldata description)
@@ -390,6 +394,7 @@ contract PactCommerce is IPactCommerce, Ownable, ReentrancyGuard {
             subjectRef: subjectRef,
             evidenceHash: evidenceHash,
             bondAmount: expectedBondAmount,
+            openedAt: uint64(block.timestamp),
             status: DisputeStatus.Open,
             resolution: bytes32(0)
         });
@@ -465,10 +470,13 @@ contract PactCommerce is IPactCommerce, Ownable, ReentrancyGuard {
     }
 
     /// @notice Expire an open dispute, returning the bond to the challenger.
-    /// Treats the dispute as rejected (original decision upheld). Anyone may call this.
+    /// Treats the dispute as rejected (original decision upheld). Anyone may call this after the liveness deadline.
     function expireDispute(uint256 disputeId, bytes32 resolution) external nonReentrant {
         Dispute storage dispute = _getDispute(disputeId);
         if (dispute.status != DisputeStatus.Open) revert DisputeNotOpen();
+        if (block.timestamp < uint256(dispute.openedAt) + disputeDeadlineDuration) {
+            revert DisputeDeadlineNotReached();
+        }
 
         dispute.status = DisputeStatus.Rejected;
         dispute.resolution = resolution;

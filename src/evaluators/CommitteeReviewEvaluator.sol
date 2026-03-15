@@ -34,6 +34,7 @@ contract CommitteeReviewEvaluator is IEvaluatorSettlementRecipient, Ownable, Ree
         uint64 reviewDeadline;
         uint32 approvalThreshold;
         uint32 rejectionThreshold;
+        uint32 committeeSize;
         bool requireOptParamsHash;
         bool resolved;
     }
@@ -53,6 +54,8 @@ contract CommitteeReviewEvaluator is IEvaluatorSettlementRecipient, Ownable, Ree
         bool accountingFinalized;
     }
 
+    uint16 public constant MAX_VALIDATOR_REPUTATION = 100;
+
     IPactCommerce public immutable commerce;
     IERC20 public immutable settlementToken;
     address public immutable slashRecipient;
@@ -63,14 +66,21 @@ contract CommitteeReviewEvaluator is IEvaluatorSettlementRecipient, Ownable, Ree
     uint8 public immutable slashAfterDisagreements;
 
     mapping(address validator => ValidatorAccount) public validators;
+    mapping(address validator => uint16 reputation) private validatorReputations;
     mapping(uint256 jobId => JobConfig) public jobConfigs;
     mapping(uint256 jobId => JobResolution) public jobResolutions;
     mapping(uint256 jobId => VoteTally) public tallies;
     mapping(uint256 jobId => mapping(address validator => VoteChoice choice)) public votes;
+    mapping(uint256 jobId => mapping(address validator => bool selected)) public committeeMembers;
+    mapping(uint256 jobId => address[]) private jobCommittee;
     mapping(uint256 jobId => address[]) private jobVoters;
+
+    address[] private activeValidators;
+    mapping(address validator => uint256 indexPlusOne) private activeValidatorIndexes;
 
     event ValidatorStaked(address indexed validator, uint256 amount, uint256 newStake, bool active);
     event ValidatorUnstaked(address indexed validator, uint256 amount, uint256 newStake, bool active);
+    event ValidatorReputationUpdated(address indexed validator, uint16 reputation);
     event RewardsClaimed(address indexed validator, uint256 amount);
     event JobConfigured(
         uint256 indexed jobId,
@@ -82,6 +92,7 @@ contract CommitteeReviewEvaluator is IEvaluatorSettlementRecipient, Ownable, Ree
         bool requireOptParamsHash,
         bytes32 expectedOptParamsHash
     );
+    event CommitteeSelected(uint256 indexed jobId, bytes32 indexed selectionSeed, uint32 committeeSize);
     event VoteCast(
         uint256 indexed jobId,
         address indexed validator,
@@ -125,6 +136,7 @@ contract CommitteeReviewEvaluator is IEvaluatorSettlementRecipient, Ownable, Ree
     error ZeroAddress();
     error InvalidConfig();
     error InvalidAmount();
+    error InvalidReputation(uint16 reputation);
     error ValidatorInactive();
     error InsufficientStake();
     error PendingAccounting(uint256 pendingAccountings);
@@ -138,6 +150,9 @@ contract CommitteeReviewEvaluator is IEvaluatorSettlementRecipient, Ownable, Ree
     error AlreadyVoted();
     error InvalidJobStatus();
     error InvalidOptParamsHash(bytes32 actual, bytes32 expected);
+    error RewardExceedsSlashableStake(uint256 rewardAmount, uint256 requiredStake, uint256 validatorStake);
+    error InsufficientActiveValidators(uint256 required, uint256 available);
+    error ValidatorNotSelected(address validator);
 
     constructor(
         address commerceAddress,
@@ -175,10 +190,12 @@ contract CommitteeReviewEvaluator is IEvaluatorSettlementRecipient, Ownable, Ree
         if (amount == 0) revert InvalidAmount();
 
         ValidatorAccount storage validator = validators[msg.sender];
+        bool wasActive = validator.active;
         settlementToken.safeTransferFrom(msg.sender, address(this), amount);
 
         validator.stake += amount;
         validator.active = validator.stake >= minimumStake;
+        _syncActiveValidatorSet(msg.sender, wasActive, validator.active);
 
         emit ValidatorStaked(msg.sender, amount, validator.stake, validator.active);
     }
@@ -190,8 +207,10 @@ contract CommitteeReviewEvaluator is IEvaluatorSettlementRecipient, Ownable, Ree
         if (validator.pendingAccountings != 0) revert PendingAccounting(validator.pendingAccountings);
         if (amount > validator.stake) revert InsufficientStake();
 
+        bool wasActive = validator.active;
         validator.stake -= amount;
         validator.active = validator.stake >= minimumStake;
+        _syncActiveValidatorSet(msg.sender, wasActive, validator.active);
         settlementToken.safeTransfer(msg.sender, amount);
 
         emit ValidatorUnstaked(msg.sender, amount, validator.stake, validator.active);
@@ -206,6 +225,25 @@ contract CommitteeReviewEvaluator is IEvaluatorSettlementRecipient, Ownable, Ree
         settlementToken.safeTransfer(msg.sender, amount);
 
         emit RewardsClaimed(msg.sender, amount);
+    }
+
+    function setValidatorReputation(address validator, uint16 reputation) external onlyOwner {
+        if (validator == address(0)) revert ZeroAddress();
+        if (reputation == 0 || reputation > MAX_VALIDATOR_REPUTATION) {
+            revert InvalidReputation(reputation);
+        }
+
+        validatorReputations[validator] = reputation;
+        emit ValidatorReputationUpdated(validator, reputation);
+    }
+
+    function validatorReputation(address validator) public view returns (uint16) {
+        uint16 reputation = validatorReputations[validator];
+        if (reputation == 0) {
+            return MAX_VALIDATOR_REPUTATION;
+        }
+
+        return reputation;
     }
 
     function configureJob(
@@ -283,12 +321,28 @@ contract CommitteeReviewEvaluator is IEvaluatorSettlementRecipient, Ownable, Ree
         emit JobAccountingFinalized(jobId, finalOutcome, disputed, rewardAmount, alignedValidatorCount, finalResolution);
     }
 
+    function getCommittee(uint256 jobId) external view returns (address[] memory) {
+        return jobCommittee[jobId];
+    }
+
     function getVoters(uint256 jobId) external view returns (address[] memory) {
         return jobVoters[jobId];
     }
 
+    function getActiveValidators() external view returns (address[] memory) {
+        return activeValidators;
+    }
+
     function settlementRecipient() external view returns (address) {
         return address(this);
+    }
+
+    function validatorRewardForJob(uint256 jobId) public view returns (uint256 rewardAmount) {
+        (, rewardAmount,,) = commerce.previewSettlement(jobId);
+    }
+
+    function minimumRequiredStakeForJob(uint256 jobId) public view returns (uint256) {
+        return _minimumRequiredStake(validatorRewardForJob(jobId));
     }
 
     function _configureJob(
@@ -301,6 +355,13 @@ contract CommitteeReviewEvaluator is IEvaluatorSettlementRecipient, Ownable, Ree
         bool requireOptParamsHash
     ) internal {
         if (approvalThreshold == 0 || rejectionThreshold == 0) revert InvalidConfig();
+
+        uint256 committeeSize = uint256(approvalThreshold) + uint256(rejectionThreshold) - 1;
+        uint256 activeValidatorCount = activeValidators.length;
+        if (committeeSize > type(uint32).max) revert InvalidConfig();
+        if (activeValidatorCount < committeeSize) {
+            revert InsufficientActiveValidators(committeeSize, activeValidatorCount);
+        }
 
         JobConfig storage config = jobConfigs[jobId];
         if (config.resolved) revert JobAlreadyResolved();
@@ -323,12 +384,24 @@ contract CommitteeReviewEvaluator is IEvaluatorSettlementRecipient, Ownable, Ree
         config.reviewDeadline = uint64(block.timestamp + reviewPeriod);
         config.approvalThreshold = approvalThreshold;
         config.rejectionThreshold = rejectionThreshold;
+        config.committeeSize = uint32(committeeSize);
         config.requireOptParamsHash = requireOptParamsHash;
         config.resolved = false;
 
         delete tallies[jobId];
         delete jobVoters[jobId];
         delete jobResolutions[jobId];
+
+        address[] storage committeeForJob = jobCommittee[jobId];
+        for (uint256 i = 0; i < committeeForJob.length; ++i) {
+            delete committeeMembers[jobId][committeeForJob[i]];
+        }
+        delete jobCommittee[jobId];
+
+        bytes32 selectionSeed = keccak256(
+            abi.encode(block.prevrandao, block.timestamp, jobId, successAttestation, failureAttestation, committeeSize)
+        );
+        _selectCommittee(jobId, uint32(committeeSize), selectionSeed);
 
         emit JobConfigured(
             jobId,
@@ -351,10 +424,17 @@ contract CommitteeReviewEvaluator is IEvaluatorSettlementRecipient, Ownable, Ree
         JobConfig storage config = jobConfigs[jobId];
         if (config.approvalThreshold == 0 || config.rejectionThreshold == 0) revert JobNotConfigured();
         if (config.resolved) revert JobAlreadyResolved();
+        if (!committeeMembers[jobId][msg.sender]) revert ValidatorNotSelected(msg.sender);
         if (votes[jobId][msg.sender] != VoteChoice.None) revert AlreadyVoted();
 
         IPactCommerce.Job memory job = commerce.getJob(jobId);
         if (job.status != IPactCommerce.Status.Submitted) revert InvalidJobStatus();
+
+        uint256 rewardAmount = validatorRewardForJob(jobId);
+        uint256 requiredStake = _minimumRequiredStake(rewardAmount);
+        if (validator.stake < requiredStake) {
+            revert RewardExceedsSlashableStake(rewardAmount, requiredStake, validator.stake);
+        }
 
         bytes32 optParamsHash = keccak256(optParams);
         if (config.requireOptParamsHash && optParamsHash != config.expectedOptParamsHash) {
@@ -486,8 +566,10 @@ contract CommitteeReviewEvaluator is IEvaluatorSettlementRecipient, Ownable, Ree
                 continue;
             }
 
+            bool wasActive = validator.active;
             validator.stake -= slashAmount;
             validator.active = validator.stake >= minimumStake;
+            _syncActiveValidatorSet(validatorAddress, wasActive, validator.active);
             settlementToken.safeTransfer(slashRecipient, slashAmount);
 
             emit ValidatorSlashed(jobId, validatorAddress, slashAmount, slashAfterDisagreements, outcome);
@@ -504,6 +586,71 @@ contract CommitteeReviewEvaluator is IEvaluatorSettlementRecipient, Ownable, Ree
                 validator.pendingAccountings -= 1;
             }
         }
+    }
+
+    function _selectCommittee(uint256 jobId, uint32 committeeSize, bytes32 selectionSeed) internal {
+        address[] memory candidates = activeValidators;
+
+        // Draw without replacement so higher-reputation validators are more likely to land on each job's panel.
+        for (uint256 i = 0; i < committeeSize; ++i) {
+            uint256 remainingWeight;
+            for (uint256 j = i; j < candidates.length; ++j) {
+                remainingWeight += _selectionWeight(candidates[j]);
+            }
+
+            uint256 targetWeight = uint256(keccak256(abi.encode(selectionSeed, i))) % remainingWeight;
+            uint256 cumulativeWeight;
+            uint256 selectedIndex = i;
+
+            for (uint256 j = i; j < candidates.length; ++j) {
+                cumulativeWeight += _selectionWeight(candidates[j]);
+                if (targetWeight < cumulativeWeight) {
+                    selectedIndex = j;
+                    break;
+                }
+            }
+
+            (candidates[i], candidates[selectedIndex]) = (candidates[selectedIndex], candidates[i]);
+
+            address validatorAddress = candidates[i];
+            committeeMembers[jobId][validatorAddress] = true;
+            jobCommittee[jobId].push(validatorAddress);
+        }
+
+        emit CommitteeSelected(jobId, selectionSeed, committeeSize);
+    }
+
+    function _selectionWeight(address validator) internal view returns (uint256) {
+        return validatorReputation(validator);
+    }
+
+    function _syncActiveValidatorSet(address validator, bool wasActive, bool isActive) internal {
+        if (wasActive == isActive) {
+            return;
+        }
+
+        if (isActive) {
+            activeValidatorIndexes[validator] = activeValidators.length + 1;
+            activeValidators.push(validator);
+            return;
+        }
+
+        uint256 indexPlusOne = activeValidatorIndexes[validator];
+        if (indexPlusOne == 0) {
+            return;
+        }
+
+        uint256 index = indexPlusOne - 1;
+        uint256 lastIndex = activeValidators.length - 1;
+
+        if (index != lastIndex) {
+            address lastValidator = activeValidators[lastIndex];
+            activeValidators[index] = lastValidator;
+            activeValidatorIndexes[lastValidator] = index + 1;
+        }
+
+        activeValidators.pop();
+        delete activeValidatorIndexes[validator];
     }
 
     function _allocateRewards(uint256 jobId, VoteChoice outcome, uint256 rewardAmount, uint256 alignedValidatorCount)
@@ -529,5 +676,9 @@ contract CommitteeReviewEvaluator is IEvaluatorSettlementRecipient, Ownable, Ree
         if (remainder > 0 && remainderRecipient != address(0)) {
             validators[remainderRecipient].accruedRewards += remainder;
         }
+    }
+
+    function _minimumRequiredStake(uint256 rewardAmount) internal view returns (uint256) {
+        return (rewardAmount * 10_000 + slashingBps - 1) / slashingBps;
     }
 }

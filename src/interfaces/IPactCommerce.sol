@@ -38,6 +38,7 @@ interface IPactCommerce {
         bytes32 subjectRef;
         bytes32 evidenceHash;
         uint256 bondAmount;
+        uint64 openedAt;
         DisputeStatus status;
         bytes32 resolution;
     }
@@ -91,6 +92,7 @@ interface IPactCommerce {
     function getDispute(uint256 disputeId) external view returns (Dispute memory);
     function getDisputeForJob(uint256 jobId) external view returns (uint256 disputeId);
     function disputeBondAmount() external view returns (uint256);
+    function disputeDeadlineDuration() external view returns (uint256);
     function getNextJobId() external view returns (uint256);
     function getNextDisputeId() external view returns (uint256);
     function previewPayout(uint256 jobId) external view returns (uint256 providerAmount, uint256 withheldAmount);

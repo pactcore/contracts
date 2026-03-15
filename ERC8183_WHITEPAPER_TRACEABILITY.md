@@ -29,6 +29,8 @@ Current implementation:
 - `CommitteeReviewEvaluator.VoteChoice` matches the whitepaper strategy space.
 - The validator share remains the commerce-layer 5% reward lane.
 - `consecutiveDeviations`, `slashAfterDisagreements`, and `slashingBps` implement repeated-deviation slashing.
+- `configureJob(...)` now pseudo-randomly samples a fixed per-job committee from the active validator set using owner-managed validator reputation weights, and `castVote(...)` rejects non-selected validators so not every staker can pile into every review.
+- `validatorRewardForJob(jobId)`, `minimumRequiredStakeForJob(jobId)`, and the `castVote(...)` stake-coverage check now enforce the paper's `alpha >= R / Stake` condition per job before a validator can participate.
 - `finalizeJobAccounting(jobId)` delays reward allocation until either the dispute window expires or a raised dispute is resolved.
 
 ### 8.6 Dispute-game settlement
@@ -55,13 +57,18 @@ Current implementation:
 
 The current contracts intentionally stop short of full whitepaper parity in a few places:
 - No onchain Layer 1 auto-validation module exists yet; the repo starts at ERC-8183 job submission plus evaluator review.
-- Committee membership is permissionless stake-based today; there is no random validator sampling or reputation-weighted validator selection.
+- Committee selection is now pseudo-random per job, but it is still not reputation-weighted and does not use verifiable randomness.
 - Juror eligibility is reputation-gated and panel selection is pseudo-random, but the full whitepaper reputation system (validator accuracy, appeal win rate, uptime, broader juror scoring updates) is not yet persisted onchain.
-- The contracts expose configurable slashing parameters, but they do not enforce the paper's `alpha >= R / Stake` condition across every deployment configuration.
 
 ## Validation run
 
 The traceability pass was checked with:
+
+```bash
+~/.foundry/bin/forge build
+~/.foundry/bin/forge test
+```
+ checked with:
 
 ```bash
 ~/.foundry/bin/forge build

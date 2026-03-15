@@ -34,7 +34,7 @@ contract HumanJuryTest is Test {
     uint256 private constant VALIDATOR_BANKROLL = 5_000e6;
     uint256 private constant CHALLENGER_BANKROLL = 1_000e6;
     uint256 private constant BUDGET = 1_000e6;
-    uint256 private constant MINIMUM_STAKE = 300e6;
+    uint256 private constant MINIMUM_STAKE = 500e6;
     uint256 private constant DISPUTE_WINDOW = 1 days;
     uint16 private constant PLATFORM_FEE_BPS = 500;
     uint16 private constant VALIDATOR_REWARD_BPS = 500;

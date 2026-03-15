@@ -20,12 +20,13 @@ contract CommitteeReviewEvaluatorTest is Test {
     address private validatorA = makeAddr("validatorA");
     address private validatorB = makeAddr("validatorB");
     address private validatorC = makeAddr("validatorC");
+    address private validatorD = makeAddr("validatorD");
 
     uint256 private constant INITIAL_BALANCE = 20_000e6;
     uint256 private constant VALIDATOR_BANKROLL = 5_000e6;
     uint256 private constant CHALLENGER_BANKROLL = 1_000e6;
     uint256 private constant BUDGET = 1_000e6;
-    uint256 private constant MINIMUM_STAKE = 300e6;
+    uint256 private constant MINIMUM_STAKE = 500e6;
     uint256 private constant DISPUTE_WINDOW = 1 days;
     uint16 private constant PLATFORM_FEE_BPS = 500;
     uint16 private constant VALIDATOR_REWARD_BPS = 500;
@@ -330,6 +331,221 @@ contract CommitteeReviewEvaluatorTest is Test {
         committeeEvaluator.castVote(jobId, CommitteeReviewEvaluator.VoteChoice.Approve, wrongOptParams);
     }
 
+    function testCommitteeRequiresStakeCoverageForValidatorReward() external {
+        uint256 undercollateralizedMinimumStake = 300e6;
+        CommitteeReviewEvaluator undercollateralizedEvaluator = new CommitteeReviewEvaluator(
+            address(commerce),
+            address(usdc),
+            undercollateralizedMinimumStake,
+            DISPUTE_WINDOW,
+            REVIEW_DEADLINE,
+            SLASHING_BPS,
+            SLASH_AFTER_DISAGREEMENTS,
+            treasury
+        );
+        address undercollateralizedValidator = makeAddr("undercollateralizedValidator");
+
+        usdc.mint(undercollateralizedValidator, VALIDATOR_BANKROLL);
+        vm.startPrank(undercollateralizedValidator);
+        usdc.approve(address(undercollateralizedEvaluator), type(uint256).max);
+        undercollateralizedEvaluator.stake(undercollateralizedMinimumStake);
+        vm.stopPrank();
+
+        vm.prank(client);
+        uint256 jobId = commerce.createJob(
+            provider, address(undercollateralizedEvaluator), block.timestamp + 7 days, "committee-reviewed ERC-8183 job"
+        );
+
+        vm.prank(client);
+        commerce.setBudget(jobId, BUDGET);
+
+        vm.prank(client);
+        commerce.fund(jobId, BUDGET);
+
+        vm.prank(provider);
+        commerce.submit(jobId, keccak256("deliverable:stake-coverage"));
+
+        undercollateralizedEvaluator.configureJob(
+            jobId,
+            keccak256("attestation:stake-coverage-approved"),
+            keccak256("attestation:stake-coverage-rejected"),
+            1,
+            1
+        );
+
+        uint256 validatorReward = undercollateralizedEvaluator.validatorRewardForJob(jobId);
+        uint256 requiredStake = undercollateralizedEvaluator.minimumRequiredStakeForJob(jobId);
+        assertEq(validatorReward, (BUDGET * VALIDATOR_REWARD_BPS) / 10_000);
+        assertEq(requiredStake, 500e6);
+
+        vm.expectRevert(
+            abi.encodeWithSelector(
+                CommitteeReviewEvaluator.RewardExceedsSlashableStake.selector,
+                validatorReward,
+                requiredStake,
+                undercollateralizedMinimumStake
+            )
+        );
+        vm.prank(undercollateralizedValidator);
+        undercollateralizedEvaluator.castVote(jobId, CommitteeReviewEvaluator.VoteChoice.Approve);
+    }
+
+    function testConfigureJobRevertsWhenThresholdsNeedMoreActiveValidators() external {
+        uint256 jobId = _createAndFundJob(7 days);
+
+        vm.prank(provider);
+        commerce.submit(jobId, keccak256("deliverable:insufficient-active-set"));
+
+        vm.expectRevert(
+            abi.encodeWithSelector(
+                CommitteeReviewEvaluator.InsufficientActiveValidators.selector, uint256(4), uint256(3)
+            )
+        );
+        committeeEvaluator.configureJob(
+            jobId,
+            keccak256("attestation:insufficient-active-approved"),
+            keccak256("attestation:insufficient-active-rejected"),
+            3,
+            2
+        );
+    }
+
+    function testSampledCommitteeRejectsVotesFromUnselectedValidators() external {
+        CommitteeReviewEvaluator sampledEvaluator = new CommitteeReviewEvaluator(
+            address(commerce),
+            address(usdc),
+            MINIMUM_STAKE,
+            DISPUTE_WINDOW,
+            REVIEW_DEADLINE,
+            SLASHING_BPS,
+            SLASH_AFTER_DISAGREEMENTS,
+            treasury
+        );
+
+        usdc.mint(validatorD, VALIDATOR_BANKROLL);
+        _approveAndStake(address(sampledEvaluator), validatorA, MINIMUM_STAKE);
+        _approveAndStake(address(sampledEvaluator), validatorB, MINIMUM_STAKE);
+        _approveAndStake(address(sampledEvaluator), validatorC, MINIMUM_STAKE);
+        _approveAndStake(address(sampledEvaluator), validatorD, MINIMUM_STAKE);
+
+        vm.prank(client);
+        uint256 jobId =
+            commerce.createJob(provider, address(sampledEvaluator), block.timestamp + 7 days, "sampled committee job");
+
+        vm.prank(client);
+        commerce.setBudget(jobId, BUDGET);
+
+        vm.prank(client);
+        commerce.fund(jobId, BUDGET);
+
+        vm.prank(provider);
+        commerce.submit(jobId, keccak256("deliverable:sampled-committee"));
+
+        sampledEvaluator.configureJob(
+            jobId, keccak256("attestation:sampled-approved"), keccak256("attestation:sampled-rejected"), 2, 1
+        );
+
+        address[] memory committee = sampledEvaluator.getCommittee(jobId);
+        assertEq(committee.length, 2);
+
+        address[] memory candidates = new address[](4);
+        candidates[0] = validatorA;
+        candidates[1] = validatorB;
+        candidates[2] = validatorC;
+        candidates[3] = validatorD;
+
+        address unselected;
+        for (uint256 i = 0; i < candidates.length; ++i) {
+            if (!_containsAddress(committee, candidates[i])) {
+                unselected = candidates[i];
+                break;
+            }
+        }
+
+        assertTrue(unselected != address(0));
+
+        vm.expectRevert(abi.encodeWithSelector(CommitteeReviewEvaluator.ValidatorNotSelected.selector, unselected));
+        vm.prank(unselected);
+        sampledEvaluator.castVote(jobId, CommitteeReviewEvaluator.VoteChoice.Approve);
+    }
+
+    function testWeightedCommitteeSelectionUsesValidatorReputation() external {
+        CommitteeReviewEvaluator weightedEvaluator = new CommitteeReviewEvaluator(
+            address(commerce),
+            address(usdc),
+            MINIMUM_STAKE,
+            DISPUTE_WINDOW,
+            REVIEW_DEADLINE,
+            SLASHING_BPS,
+            SLASH_AFTER_DISAGREEMENTS,
+            treasury
+        );
+
+        usdc.mint(validatorD, VALIDATOR_BANKROLL);
+        _approveAndStake(address(weightedEvaluator), validatorA, MINIMUM_STAKE);
+        _approveAndStake(address(weightedEvaluator), validatorB, MINIMUM_STAKE);
+        _approveAndStake(address(weightedEvaluator), validatorC, MINIMUM_STAKE);
+        _approveAndStake(address(weightedEvaluator), validatorD, MINIMUM_STAKE);
+
+        weightedEvaluator.setValidatorReputation(validatorA, 100);
+        weightedEvaluator.setValidatorReputation(validatorB, 80);
+        weightedEvaluator.setValidatorReputation(validatorC, 20);
+        weightedEvaluator.setValidatorReputation(validatorD, 5);
+
+        vm.prank(client);
+        uint256 jobId = commerce.createJob(
+            provider, address(weightedEvaluator), block.timestamp + 7 days, "weighted committee job"
+        );
+
+        vm.prank(client);
+        commerce.setBudget(jobId, BUDGET);
+
+        vm.prank(client);
+        commerce.fund(jobId, BUDGET);
+
+        vm.prank(provider);
+        commerce.submit(jobId, keccak256("deliverable:weighted-committee"));
+
+        bytes32 successAttestation = keccak256("attestation:weighted-approved");
+        bytes32 failureAttestation = keccak256("attestation:weighted-rejected");
+
+        vm.prevrandao(keccak256("weighted-selection-seed"));
+
+        bytes32 selectionSeed = keccak256(
+            abi.encode(block.prevrandao, block.timestamp, jobId, successAttestation, failureAttestation, uint256(2))
+        );
+
+        weightedEvaluator.configureJob(jobId, successAttestation, failureAttestation, 2, 1);
+
+        address[] memory committee = weightedEvaluator.getCommittee(jobId);
+        assertEq(committee.length, 2);
+        assertEq(weightedEvaluator.validatorReputation(validatorD), 5);
+
+        address[] memory candidates = new address[](4);
+        candidates[0] = validatorA;
+        candidates[1] = validatorB;
+        candidates[2] = validatorC;
+        candidates[3] = validatorD;
+
+        uint16[] memory reputations = new uint16[](4);
+        reputations[0] = 100;
+        reputations[1] = 80;
+        reputations[2] = 20;
+        reputations[3] = 5;
+
+        address[] memory expectedCommittee = _expectedWeightedCommittee(candidates, reputations, selectionSeed, 2);
+        assertEq(committee[0], expectedCommittee[0]);
+        assertEq(committee[1], expectedCommittee[1]);
+    }
+
+    function testSetValidatorReputationRejectsOutOfRangeScores() external {
+        vm.expectRevert(abi.encodeWithSelector(CommitteeReviewEvaluator.InvalidReputation.selector, uint16(0)));
+        committeeEvaluator.setValidatorReputation(validatorA, 0);
+
+        vm.expectRevert(abi.encodeWithSelector(CommitteeReviewEvaluator.InvalidReputation.selector, uint16(101)));
+        committeeEvaluator.setValidatorReputation(validatorA, 101);
+    }
+
     function testSplitVoteDeadlockCanBeResolvedAfterDeadline() external {
         uint256 jobId = _createAndFundJob(7 days);
         bytes32 deliverable = keccak256("deliverable:split-vote");
@@ -412,10 +628,56 @@ contract CommitteeReviewEvaluatorTest is Test {
     }
 
     function _approveAndStake(address validator, uint256 amount) internal {
+        _approveAndStake(address(committeeEvaluator), validator, amount);
+    }
+
+    function _approveAndStake(address evaluator, address validator, uint256 amount) internal {
         vm.startPrank(validator);
-        usdc.approve(address(committeeEvaluator), type(uint256).max);
-        committeeEvaluator.stake(amount);
+        usdc.approve(evaluator, type(uint256).max);
+        CommitteeReviewEvaluator(evaluator).stake(amount);
         vm.stopPrank();
+    }
+
+    function _expectedWeightedCommittee(
+        address[] memory candidates,
+        uint16[] memory reputations,
+        bytes32 selectionSeed,
+        uint256 committeeSize
+    ) internal pure returns (address[] memory committee) {
+        committee = new address[](committeeSize);
+
+        for (uint256 i = 0; i < committeeSize; ++i) {
+            uint256 remainingWeight;
+            for (uint256 j = i; j < candidates.length; ++j) {
+                remainingWeight += reputations[j];
+            }
+
+            uint256 targetWeight = uint256(keccak256(abi.encode(selectionSeed, i))) % remainingWeight;
+            uint256 cumulativeWeight;
+            uint256 selectedIndex = i;
+
+            for (uint256 j = i; j < candidates.length; ++j) {
+                cumulativeWeight += reputations[j];
+                if (targetWeight < cumulativeWeight) {
+                    selectedIndex = j;
+                    break;
+                }
+            }
+
+            (candidates[i], candidates[selectedIndex]) = (candidates[selectedIndex], candidates[i]);
+            (reputations[i], reputations[selectedIndex]) = (reputations[selectedIndex], reputations[i]);
+            committee[i] = candidates[i];
+        }
+    }
+
+    function _containsAddress(address[] memory values, address candidate) internal pure returns (bool) {
+        for (uint256 i = 0; i < values.length; ++i) {
+            if (values[i] == candidate) {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     function _assertValidatorAccount(
