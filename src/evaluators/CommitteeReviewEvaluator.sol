@@ -358,9 +358,12 @@ contract CommitteeReviewEvaluator is IEvaluatorSettlementRecipient, Ownable, Ree
     ) internal {
         if (approvalThreshold == 0 || rejectionThreshold == 0) revert InvalidConfig();
 
+        IPactCommerce.Job memory job = commerce.getJob(jobId);
+        if (job.status != IPactCommerce.Status.Submitted) revert InvalidJobStatus();
+
         uint256 committeeSize = uint256(approvalThreshold) + uint256(rejectionThreshold) - 1;
         if (committeeSize > type(uint32).max) revert InvalidConfig();
-        _validateCommitteeCapacity(jobId, committeeSize);
+        _validateCommitteeCapacity(committeeSize, job);
 
         JobConfig storage config = jobConfigs[jobId];
         if (config.resolved) revert JobAlreadyResolved();
@@ -620,13 +623,13 @@ contract CommitteeReviewEvaluator is IEvaluatorSettlementRecipient, Ownable, Ree
         emit CommitteeSelected(jobId, selectionSeed, committeeSize);
     }
 
-    function _validateCommitteeCapacity(uint256 jobId, uint256 committeeSize) internal view {
+    function _validateCommitteeCapacity(uint256 committeeSize, IPactCommerce.Job memory job) internal view {
         uint256 activeValidatorCount = activeValidators.length;
         if (activeValidatorCount < committeeSize) {
             revert InsufficientActiveValidators(committeeSize, activeValidatorCount);
         }
 
-        uint256 eligibleValidatorCount = _eligibleValidatorCount(commerce.getJob(jobId));
+        uint256 eligibleValidatorCount = _eligibleValidatorCount(job);
         if (eligibleValidatorCount < committeeSize) {
             revert InsufficientEligibleValidators(eligibleValidatorCount, committeeSize);
         }

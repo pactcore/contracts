@@ -390,6 +390,38 @@ contract CommitteeReviewEvaluatorTest is Test {
         undercollateralizedEvaluator.castVote(jobId, CommitteeReviewEvaluator.VoteChoice.Approve);
     }
 
+    function testConfigureJobRevertsBeforeProviderSubmission() external {
+        uint256 jobId = _createAndFundJob(7 days);
+
+        vm.expectRevert(CommitteeReviewEvaluator.InvalidJobStatus.selector);
+        committeeEvaluator.configureJob(
+            jobId, keccak256("attestation:premature-approved"), keccak256("attestation:premature-rejected"), 2, 2
+        );
+    }
+
+    function testConfigureJobRevertsAfterJobAlreadyTerminal() external {
+        uint256 jobId = _createAndFundJob(7 days);
+        bytes32 deliverable = keccak256("deliverable:terminal-config");
+        bytes32 successAttestation = keccak256("attestation:terminal-approved");
+        bytes32 failureAttestation = keccak256("attestation:terminal-rejected");
+
+        vm.prank(provider);
+        commerce.submit(jobId, deliverable);
+
+        committeeEvaluator.configureJob(jobId, successAttestation, failureAttestation, 2, 2);
+
+        vm.prank(validatorA);
+        committeeEvaluator.castVote(jobId, CommitteeReviewEvaluator.VoteChoice.Approve);
+
+        vm.prank(validatorB);
+        committeeEvaluator.castVote(jobId, CommitteeReviewEvaluator.VoteChoice.Approve);
+
+        vm.expectRevert(CommitteeReviewEvaluator.InvalidJobStatus.selector);
+        committeeEvaluator.configureJob(
+            jobId, keccak256("attestation:reconfigured-approved"), keccak256("attestation:reconfigured-rejected"), 2, 2
+        );
+    }
+
     function testConfigureJobRevertsWhenThresholdsNeedMoreActiveValidators() external {
         uint256 jobId = _createAndFundJob(7 days);
 
