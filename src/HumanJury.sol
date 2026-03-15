@@ -159,7 +159,8 @@ contract HumanJury is Ownable, ReentrancyGuard {
         IPactCommerce.Dispute memory dispute = commerce.getDispute(disputeId);
         if (dispute.status != IPactCommerce.DisputeStatus.Open) revert ReviewNotOpen();
 
-        selectedJurors = _selectJurors(disputeId, dispute.jobId, dispute.evidenceHash);
+        IPactCommerce.Job memory job = commerce.getJob(dispute.jobId);
+        selectedJurors = _selectJurors(disputeId, dispute.jobId, dispute.evidenceHash, job, dispute.challenger);
         uint8 majorityThreshold = uint8(panelSize / 2) + 1;
 
         review.proposedFinalStatus = proposedFinalStatus;
@@ -277,15 +278,21 @@ contract HumanJury is Ownable, ReentrancyGuard {
         emit ReviewResolved(disputeId, upheld, finalStatus, resolution, rewardAmount, alignedJurorCount);
     }
 
-    function _selectJurors(uint256 disputeId, uint256 jobId, bytes32 evidenceHash)
-        internal
-        view
-        returns (address[] memory selectedJurors)
-    {
+    function _selectJurors(
+        uint256 disputeId,
+        uint256 jobId,
+        bytes32 evidenceHash,
+        IPactCommerce.Job memory job,
+        address challenger
+    ) internal view returns (address[] memory selectedJurors) {
         uint256 eligibleCount;
         for (uint256 i = 0; i < jurorRegistry.length; ++i) {
-            JurorAccount storage juror = jurors[jurorRegistry[i]];
-            if (juror.active && juror.reputation >= minimumJurorReputation) {
+            address jurorAddress = jurorRegistry[i];
+            JurorAccount storage juror = jurors[jurorAddress];
+            if (
+                juror.active && juror.reputation >= minimumJurorReputation
+                    && !_isReviewParticipant(jurorAddress, job, challenger)
+            ) {
                 eligibleCount += 1;
             }
         }
@@ -299,7 +306,10 @@ contract HumanJury is Ownable, ReentrancyGuard {
         for (uint256 i = 0; i < jurorRegistry.length; ++i) {
             address jurorAddress = jurorRegistry[i];
             JurorAccount storage juror = jurors[jurorAddress];
-            if (juror.active && juror.reputation >= minimumJurorReputation) {
+            if (
+                juror.active && juror.reputation >= minimumJurorReputation
+                    && !_isReviewParticipant(jurorAddress, job, challenger)
+            ) {
                 eligibleJurors[cursor] = jurorAddress;
                 cursor += 1;
             }
@@ -313,6 +323,14 @@ contract HumanJury is Ownable, ReentrancyGuard {
             selectedJurors[i] = eligibleJurors[index];
             eligibleJurors[index] = eligibleJurors[remaining - 1];
         }
+    }
+
+    function _isReviewParticipant(address account, IPactCommerce.Job memory job, address challenger)
+        internal
+        pure
+        returns (bool)
+    {
+        return account == job.client || account == job.provider || account == job.evaluator || account == challenger;
     }
 
     function _releasePendingPanels(uint256 disputeId) internal {

@@ -122,7 +122,7 @@ File: `src/evaluators/CommitteeReviewEvaluator.sol`
 
 Purpose:
 - Adds an ERC-8183-compatible evaluator contract for Layer-2 agent-validator review instead of a single judge address.
-- Pseudo-randomly samples a per-job validator committee from the active staker set with owner-managed 1-100 reputation weights, defaults unset validators to the legacy max score, exposes the selected panel onchain, and rejects votes from non-selected validators.
+- Pseudo-randomly samples a per-job validator committee from the active staker set with owner-managed 1-100 reputation weights, excludes the job's client/provider/evaluator from that draw, defaults unset validators to the legacy max score, exposes the selected panel onchain, and rejects votes from non-selected validators.
 - Lets selected validators stake the settlement token, cast `Approve` / `Reject` / `Uncertain` votes, and resolve a submitted job once an approval or rejection threshold is met.
 - Routes the validator settlement share into the evaluator contract, rejects votes when a validator's stake cannot economically cover the job's validator reward share, and only finalizes validator rewards after either the committee dispute window expires or a terminal `raiseDispute(...)` challenge is resolved.
 - Tracks consecutive deviations from the final committee-or-jury outcome and slashes validator stake after a configurable number of disagreements, so jury/governance review can override committee-majority accounting instead of merely annotating it.
@@ -136,7 +136,7 @@ File: `src/HumanJury.sol`
 
 Purpose:
 - Turns terminal-state `raiseDispute(...)` appeals into a concrete Layer-3 jury contract instead of leaving review as a bare `owner()` action.
-- Maintains a registry of high-reputation jurors, pseudo-randomly selects an odd-sized 5-11 member panel per dispute, and tracks per-dispute `Uphold` / `Reject` votes.
+- Maintains a registry of high-reputation jurors, pseudo-randomly selects an odd-sized 5-11 member panel per dispute while excluding the job's client/provider/evaluator and the active challenger, and tracks per-dispute `Uphold` / `Reject` votes.
 - Calls `resolveDispute(...)` once the panel reaches a majority and, when `PactCommerce` ownership is delegated to the jury contract, becomes the onchain jury recipient for dispute-bond payouts.
 - Splits the jury share of the dispute bond across aligned jurors as claimable rewards, so the whitepaper's human-jury lane has explicit economic routing instead of an implied treasury sink.
 - Keeps low-reputation or inactive jurors out of new panels while still exposing the selected panel for offchain transparency and auditability.

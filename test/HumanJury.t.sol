@@ -234,6 +234,44 @@ contract HumanJuryTest is Test {
         assertEq(usdc.balanceOf(panel[1]), jurorBalanceBefore + secondJurorRewards);
     }
 
+    function testCreateReviewRevertsWhenOnlyDisputeParticipantsCanFillPanel() external {
+        uint256 jobId = _createAndFundDirectReviewJob(7 days);
+        bytes32 deliverable = keccak256("deliverable:participant-jurors");
+        bytes32 completionAttestation = keccak256("attestation:participant-jurors");
+
+        vm.prank(provider);
+        commerce.submit(jobId, deliverable);
+
+        vm.prank(evaluator);
+        commerce.complete(jobId, completionAttestation);
+
+        uint256 disputeBond = commerce.disputeBondAmount();
+
+        vm.prank(challenger);
+        uint256 disputeId = commerce.raiseDispute(
+            jobId,
+            keccak256("human-review"),
+            keccak256("completion://participant-jurors"),
+            keccak256("evidence://participant-jurors"),
+            disputeBond
+        );
+
+        humanJury.configureJuror(jurorD, 88, false);
+        humanJury.configureJuror(jurorE, 86, false);
+        humanJury.configureJuror(client, 99, true);
+        humanJury.configureJuror(provider, 98, true);
+        humanJury.configureJuror(evaluator, 97, true);
+        humanJury.configureJuror(challenger, 96, true);
+
+        vm.expectRevert(abi.encodeWithSelector(HumanJury.InsufficientEligibleJurors.selector, uint256(3), uint256(5)));
+        humanJury.createReview(
+            disputeId,
+            IPactCommerce.Status.Rejected,
+            keccak256("unused-upheld-resolution"),
+            keccak256("unused-rejected-resolution")
+        );
+    }
+
     function testExpiredReviewResolvesDisputeAsRejectedAfterDeadline() external {
         uint256 jobId = _createAndFundDirectReviewJob(7 days);
         bytes32 deliverable = keccak256("deliverable:expired-review");

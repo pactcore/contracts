@@ -410,6 +410,48 @@ contract CommitteeReviewEvaluatorTest is Test {
         );
     }
 
+    function testConfigureJobRevertsWhenOnlyParticipantsCanFillCommittee() external {
+        CommitteeReviewEvaluator conflictedEvaluator = new CommitteeReviewEvaluator(
+            address(commerce),
+            address(usdc),
+            MINIMUM_STAKE,
+            DISPUTE_WINDOW,
+            REVIEW_DEADLINE,
+            SLASHING_BPS,
+            SLASH_AFTER_DISAGREEMENTS,
+            treasury
+        );
+
+        usdc.mint(provider, VALIDATOR_BANKROLL);
+        usdc.mint(validatorD, VALIDATOR_BANKROLL);
+        _approveAndStake(address(conflictedEvaluator), client, MINIMUM_STAKE);
+        _approveAndStake(address(conflictedEvaluator), provider, MINIMUM_STAKE);
+        _approveAndStake(address(conflictedEvaluator), validatorD, MINIMUM_STAKE);
+
+        vm.prank(client);
+        uint256 jobId = commerce.createJob(
+            provider, address(conflictedEvaluator), block.timestamp + 7 days, "conflicted committee job"
+        );
+
+        vm.prank(client);
+        commerce.setBudget(jobId, BUDGET);
+
+        vm.prank(client);
+        commerce.fund(jobId, BUDGET);
+
+        vm.prank(provider);
+        commerce.submit(jobId, keccak256("deliverable:conflicted-committee"));
+
+        vm.expectRevert(
+            abi.encodeWithSelector(
+                CommitteeReviewEvaluator.InsufficientEligibleValidators.selector, uint256(1), uint256(2)
+            )
+        );
+        conflictedEvaluator.configureJob(
+            jobId, keccak256("attestation:conflicted-approved"), keccak256("attestation:conflicted-rejected"), 2, 1
+        );
+    }
+
     function testSampledCommitteeRejectsVotesFromUnselectedValidators() external {
         CommitteeReviewEvaluator sampledEvaluator = new CommitteeReviewEvaluator(
             address(commerce),

@@ -152,6 +152,7 @@ contract CommitteeReviewEvaluator is IEvaluatorSettlementRecipient, Ownable, Ree
     error InvalidOptParamsHash(bytes32 actual, bytes32 expected);
     error RewardExceedsSlashableStake(uint256 rewardAmount, uint256 requiredStake, uint256 validatorStake);
     error InsufficientActiveValidators(uint256 required, uint256 available);
+    error InsufficientEligibleValidators(uint256 eligible, uint256 required);
     error ValidatorNotSelected(address validator);
 
     constructor(
@@ -357,11 +358,8 @@ contract CommitteeReviewEvaluator is IEvaluatorSettlementRecipient, Ownable, Ree
         if (approvalThreshold == 0 || rejectionThreshold == 0) revert InvalidConfig();
 
         uint256 committeeSize = uint256(approvalThreshold) + uint256(rejectionThreshold) - 1;
-        uint256 activeValidatorCount = activeValidators.length;
         if (committeeSize > type(uint32).max) revert InvalidConfig();
-        if (activeValidatorCount < committeeSize) {
-            revert InsufficientActiveValidators(committeeSize, activeValidatorCount);
-        }
+        _validateCommitteeCapacity(jobId, committeeSize);
 
         JobConfig storage config = jobConfigs[jobId];
         if (config.resolved) revert JobAlreadyResolved();
@@ -589,7 +587,7 @@ contract CommitteeReviewEvaluator is IEvaluatorSettlementRecipient, Ownable, Ree
     }
 
     function _selectCommittee(uint256 jobId, uint32 committeeSize, bytes32 selectionSeed) internal {
-        address[] memory candidates = activeValidators;
+        address[] memory candidates = _eligibleValidators(commerce.getJob(jobId));
 
         // Draw without replacement so higher-reputation validators are more likely to land on each job's panel.
         for (uint256 i = 0; i < committeeSize; ++i) {
@@ -618,6 +616,45 @@ contract CommitteeReviewEvaluator is IEvaluatorSettlementRecipient, Ownable, Ree
         }
 
         emit CommitteeSelected(jobId, selectionSeed, committeeSize);
+    }
+
+    function _validateCommitteeCapacity(uint256 jobId, uint256 committeeSize) internal view {
+        uint256 activeValidatorCount = activeValidators.length;
+        if (activeValidatorCount < committeeSize) {
+            revert InsufficientActiveValidators(committeeSize, activeValidatorCount);
+        }
+
+        uint256 eligibleValidatorCount = _eligibleValidatorCount(commerce.getJob(jobId));
+        if (eligibleValidatorCount < committeeSize) {
+            revert InsufficientEligibleValidators(eligibleValidatorCount, committeeSize);
+        }
+    }
+
+    function _eligibleValidatorCount(IPactCommerce.Job memory job) internal view returns (uint256 eligibleCount) {
+        for (uint256 i = 0; i < activeValidators.length; ++i) {
+            if (!_isJobParticipant(activeValidators[i], job)) {
+                eligibleCount += 1;
+            }
+        }
+    }
+
+    function _eligibleValidators(IPactCommerce.Job memory job) internal view returns (address[] memory candidates) {
+        candidates = new address[](_eligibleValidatorCount(job));
+        uint256 cursor;
+
+        for (uint256 i = 0; i < activeValidators.length; ++i) {
+            address validator = activeValidators[i];
+            if (_isJobParticipant(validator, job)) {
+                continue;
+            }
+
+            candidates[cursor] = validator;
+            cursor += 1;
+        }
+    }
+
+    function _isJobParticipant(address account, IPactCommerce.Job memory job) internal pure returns (bool) {
+        return account == job.client || account == job.provider || account == job.evaluator;
     }
 
     function _selectionWeight(address validator) internal view returns (uint256) {

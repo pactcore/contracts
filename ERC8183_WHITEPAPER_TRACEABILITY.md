@@ -14,8 +14,9 @@ Whitepaper intent:
 Current implementation:
 - `src/evaluators/CommitteeReviewEvaluator.sol` models the Layer 2 validator committee as a single ERC-8183 evaluator address.
 - Validators stake the settlement token, vote `Approve` / `Reject` / `Uncertain`, and only receive the validator share after dispute-aware accounting finalizes.
+- Committee selection now excludes the job's client/provider/evaluator so the sampled validator panel stays independent from the job participants it is reviewing.
 - `src/PactCommerce.sol` provides the terminal-state dispute bond lane used for appeal escalation.
-- `src/HumanJury.sol` now models Layer 3 as an explicit high-reputation jury registry with pseudo-random 5-11 juror panel selection, majority voting, and aligned-juror reward routing from dispute bonds.
+- `src/HumanJury.sol` now models Layer 3 as an explicit high-reputation jury registry with pseudo-random 5-11 juror panel selection, majority voting, aligned-juror reward routing from dispute bonds, and participant-exclusion rules for the client/provider/evaluator/challenger set.
 - `src/evaluators/GovernanceReviewEvaluator.sol` remains the governance/DAO escalation path above the jury lane.
 
 ### 8.1 Validator game and slashing
@@ -63,12 +64,6 @@ The current contracts intentionally stop short of full whitepaper parity in a fe
 ## Validation run
 
 The traceability pass was checked with:
-
-```bash
-~/.foundry/bin/forge build
-~/.foundry/bin/forge test
-```
- checked with:
 
 ```bash
 ~/.foundry/bin/forge build
