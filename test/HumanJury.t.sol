@@ -284,6 +284,7 @@ contract HumanJuryTest is Test {
         commerce.complete(jobId, completionAttestation);
 
         uint256 disputeBond = commerce.disputeBondAmount();
+        uint256 challengerBalanceBefore = usdc.balanceOf(challenger);
 
         vm.prank(challenger);
         uint256 disputeId = commerce.raiseDispute(
@@ -321,17 +322,21 @@ contract HumanJuryTest is Test {
         vm.warp(block.timestamp + REVIEW_DEADLINE_DURATION + 1);
         humanJury.expireReview(disputeId);
 
-        // Dispute should be rejected (upholding original decision)
+        // Dispute should be rejected (upholding the original decision) without slashing the challenger.
         IPactCommerce.Dispute memory dispute = commerce.getDispute(disputeId);
         assertEq(uint8(dispute.status), uint8(IPactCommerce.DisputeStatus.Rejected));
+        assertEq(dispute.resolution, keccak256("rejected-resolution-expired"));
+        assertEq(usdc.balanceOf(challenger), challengerBalanceBefore);
 
         // Original job status preserved
         IPactCommerce.Job memory job = commerce.getJob(jobId);
         assertEq(uint8(job.status), uint8(IPactCommerce.Status.Completed));
         assertEq(job.attestation, completionAttestation);
 
-        // Jurors can have pending panels released
+        // Expired reviews do not pay jurors and release the panel lock.
+        (,, uint256 panelZeroRewards,) = humanJury.jurors(panel[0]);
         (, uint32 pendingPanelsA,,) = humanJury.jurors(panel[0]);
+        assertEq(panelZeroRewards, 0);
         assertEq(pendingPanelsA, 0);
     }
 
