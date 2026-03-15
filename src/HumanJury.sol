@@ -29,6 +29,7 @@ contract HumanJury is Ownable, ReentrancyGuard {
         bytes32 upheldResolution;
         bytes32 rejectedResolution;
         uint64 createdAt;
+        uint64 deadlineAt;
         uint64 resolvedAt;
         uint8 majorityThreshold;
         bool resolved;
@@ -42,9 +43,12 @@ contract HumanJury is Ownable, ReentrancyGuard {
 
     IPactCommerce public immutable commerce;
     IERC20 public immutable settlementToken;
+    uint16 public constant MAX_JUROR_REPUTATION = 100;
+
     uint16 public immutable minimumJurorReputation;
     uint8 public immutable panelSize;
     uint256 public immutable reviewDeadlineDuration;
+    uint256 public immutable commerceDisputeDeadline;
 
     mapping(address juror => JurorAccount) public jurors;
     mapping(uint256 disputeId => ReviewConfig) public reviews;
@@ -70,6 +74,7 @@ contract HumanJury is Ownable, ReentrancyGuard {
         IPactCommerce.Status proposedFinalStatus,
         bytes32 upheldResolution,
         bytes32 rejectedResolution,
+        uint64 deadlineAt,
         uint8 panelSize,
         uint8 majorityThreshold
     );
@@ -89,6 +94,8 @@ contract HumanJury is Ownable, ReentrancyGuard {
     error ReviewNotFound();
     error ReviewNotOpen();
     error ReviewAlreadyResolved();
+    error InvalidReputation(uint16 reputation);
+    error InvalidReviewDeadlineDuration(uint256 reviewDeadlineDuration, uint256 disputeDeadlineDuration);
     error InvalidVote();
     error JurorNotSelected();
     error AlreadyVoted();
@@ -110,17 +117,25 @@ contract HumanJury is Ownable, ReentrancyGuard {
             revert ZeroAddress();
         }
         if (panelSizeValue < 5 || panelSizeValue > 11 || panelSizeValue % 2 == 0) revert InvalidConfig();
-        if (reviewDeadlineDurationSeconds == 0) revert InvalidConfig();
+        if (minimumJurorReputationValue > MAX_JUROR_REPUTATION || reviewDeadlineDurationSeconds == 0) {
+            revert InvalidConfig();
+        }
 
         commerce = IPactCommerce(commerceAddress);
         settlementToken = IERC20(settlementTokenAddress);
         minimumJurorReputation = minimumJurorReputationValue;
         panelSize = panelSizeValue;
         reviewDeadlineDuration = reviewDeadlineDurationSeconds;
+        commerceDisputeDeadline = commerce.disputeDeadlineDuration();
+
+        if (reviewDeadlineDurationSeconds != commerceDisputeDeadline) {
+            revert InvalidReviewDeadlineDuration(reviewDeadlineDurationSeconds, commerceDisputeDeadline);
+        }
     }
 
     function configureJuror(address juror, uint16 reputation, bool active) external onlyOwner {
         if (juror == address(0)) revert ZeroAddress();
+        if (reputation > MAX_JUROR_REPUTATION) revert InvalidReputation(reputation);
 
         if (!isKnownJuror[juror]) {
             isKnownJuror[juror] = true;
@@ -160,6 +175,9 @@ contract HumanJury is Ownable, ReentrancyGuard {
         IPactCommerce.Dispute memory dispute = commerce.getDispute(disputeId);
         if (dispute.status != IPactCommerce.DisputeStatus.Open) revert ReviewNotOpen();
 
+        uint64 deadlineAt = uint64(uint256(dispute.openedAt) + reviewDeadlineDuration);
+        if (block.timestamp >= deadlineAt) revert ReviewDeadlinePassed(deadlineAt);
+
         IPactCommerce.Job memory job = commerce.getJob(dispute.jobId);
         selectedJurors = _selectJurors(disputeId, dispute.jobId, dispute.evidenceHash, job, dispute.challenger);
         uint8 majorityThreshold = uint8(panelSize / 2) + 1;
@@ -168,6 +186,7 @@ contract HumanJury is Ownable, ReentrancyGuard {
         review.upheldResolution = upheldResolution;
         review.rejectedResolution = rejectedResolution;
         review.createdAt = uint64(block.timestamp);
+        review.deadlineAt = deadlineAt;
         review.majorityThreshold = majorityThreshold;
 
         for (uint256 i = 0; i < selectedJurors.length; ++i) {
@@ -183,6 +202,7 @@ contract HumanJury is Ownable, ReentrancyGuard {
             proposedFinalStatus,
             upheldResolution,
             rejectedResolution,
+            deadlineAt,
             panelSize,
             majorityThreshold
         );
@@ -195,7 +215,7 @@ contract HumanJury is Ownable, ReentrancyGuard {
         if (review.createdAt == 0) revert ReviewNotFound();
         if (review.resolved) revert ReviewAlreadyResolved();
 
-        uint64 deadline = uint64(review.createdAt + reviewDeadlineDuration);
+        uint64 deadline = review.deadlineAt;
         if (block.timestamp >= deadline) revert ReviewDeadlinePassed(deadline);
 
         if (!isSelectedJuror[disputeId][msg.sender]) revert JurorNotSelected();
@@ -240,7 +260,7 @@ contract HumanJury is Ownable, ReentrancyGuard {
         if (review.createdAt == 0) revert ReviewNotFound();
         if (review.resolved) revert ReviewAlreadyResolved();
 
-        uint64 deadline = uint64(review.createdAt + reviewDeadlineDuration);
+        uint64 deadline = review.deadlineAt;
         if (block.timestamp < deadline) revert ReviewDeadlineNotReached();
 
         ReviewTally storage tally = tallies[disputeId];

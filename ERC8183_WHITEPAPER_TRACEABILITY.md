@@ -16,7 +16,7 @@ Current implementation:
 - Validators stake the settlement token, vote `Approve` / `Reject` / `Uncertain`, and only receive the validator share after dispute-aware accounting finalizes.
 - Committee selection now excludes the job's client/provider/evaluator so the sampled validator panel stays independent from the job participants it is reviewing.
 - `src/PactCommerce.sol` provides the terminal-state dispute bond lane used for appeal escalation.
-- `src/HumanJury.sol` now models Layer 3 as an explicit high-reputation jury registry with pseudo-random 5-11 juror panel selection, majority voting, aligned-juror reward routing from dispute bonds, and participant-exclusion rules for the client/provider/evaluator/challenger set.
+- `src/HumanJury.sol` now models Layer 3 as an explicit high-reputation jury registry with pseudo-random 5-11 juror panel selection, majority voting, aligned-juror reward routing from dispute bonds, participant-exclusion rules for the client/provider/evaluator/challenger set, and dispute-open-time-anchored review deadlines so jury panels cannot outlive the commerce-layer dispute expiry window.
 - `src/evaluators/GovernanceReviewEvaluator.sol` remains the governance/DAO escalation path above the jury lane.
 
 ### 8.1 Validator game and slashing
