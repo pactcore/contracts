@@ -272,6 +272,64 @@ contract HumanJuryTest is Test {
         );
     }
 
+    function testHumanJuryRejectsLateVotesAfterDeadline() external {
+        uint256 jobId = _createAndFundDirectReviewJob(7 days);
+        bytes32 deliverable = keccak256("deliverable:late-jury-vote");
+        bytes32 completionAttestation = keccak256("attestation:completed-late-jury-vote");
+        bytes32 rejectedResolution = keccak256("rejected-resolution-late-jury-vote");
+
+        vm.prank(provider);
+        commerce.submit(jobId, deliverable);
+
+        vm.prank(evaluator);
+        commerce.complete(jobId, completionAttestation);
+
+        uint256 disputeBond = commerce.disputeBondAmount();
+
+        vm.prank(challenger);
+        uint256 disputeId = commerce.raiseDispute(
+            jobId,
+            keccak256("human-review"),
+            keccak256("completion://late-jury-vote"),
+            keccak256("evidence://late-jury-vote"),
+            disputeBond
+        );
+
+        commerce.transferOwnership(address(humanJury));
+
+        humanJury.createReview(
+            disputeId,
+            IPactCommerce.Status.Rejected,
+            keccak256("upheld-resolution-late-jury-vote"),
+            rejectedResolution
+        );
+
+        address[] memory panel = humanJury.getPanel(disputeId);
+        uint256 deadline = block.timestamp + REVIEW_DEADLINE_DURATION;
+
+        vm.prank(panel[0]);
+        humanJury.castVote(disputeId, HumanJury.VoteChoice.Uphold);
+
+        vm.prank(panel[1]);
+        humanJury.castVote(disputeId, HumanJury.VoteChoice.Reject);
+
+        vm.warp(deadline);
+
+        vm.expectRevert(abi.encodeWithSelector(HumanJury.ReviewDeadlinePassed.selector, deadline));
+        vm.prank(panel[2]);
+        humanJury.castVote(disputeId, HumanJury.VoteChoice.Reject);
+
+        humanJury.expireReview(disputeId);
+
+        IPactCommerce.Dispute memory dispute = commerce.getDispute(disputeId);
+        assertEq(uint8(dispute.status), uint8(IPactCommerce.DisputeStatus.Rejected));
+        assertEq(dispute.resolution, rejectedResolution);
+
+        IPactCommerce.Job memory job = commerce.getJob(jobId);
+        assertEq(uint8(job.status), uint8(IPactCommerce.Status.Completed));
+        assertEq(job.attestation, completionAttestation);
+    }
+
     function testExpiredReviewResolvesDisputeAsRejectedAfterDeadline() external {
         uint256 jobId = _createAndFundDirectReviewJob(7 days);
         bytes32 deliverable = keccak256("deliverable:expired-review");
