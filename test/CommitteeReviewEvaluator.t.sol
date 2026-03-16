@@ -295,14 +295,82 @@ contract CommitteeReviewEvaluatorTest is Test {
         assertEq(uint8(job.status), uint8(IPactCommerce.Status.Expired));
         assertEq(job.attestation, expiredResolution);
 
-        _assertValidatorAccount(validatorA, MINIMUM_STAKE, 0, 1, 0, true);
-        _assertValidatorAccount(validatorB, MINIMUM_STAKE, 0, 1, 0, true);
-        _assertValidatorAccount(validatorC, MINIMUM_STAKE, 0, 1, 0, true);
+        _assertValidatorAccount(validatorA, MINIMUM_STAKE, 0, 0, 0, true);
+        _assertValidatorAccount(validatorB, MINIMUM_STAKE, 0, 0, 0, true);
+        _assertValidatorAccount(validatorC, MINIMUM_STAKE, 0, 0, 0, true);
 
         uint256 penaltyAmount = disputeBond / 10;
         assertEq(usdc.balanceOf(challenger), challengerBalanceBefore - penaltyAmount);
         assertEq(usdc.balanceOf(treasury), treasuryBalanceBefore + (penaltyAmount / 2) + validatorReward);
         assertEq(usdc.balanceOf(address(committeeEvaluator)), MINIMUM_STAKE * 3);
+    }
+
+    function testExpiredAppealOutcomeDoesNotIncrementExistingDeviationCounts() external {
+        uint256 validatorReward = (BUDGET * VALIDATOR_REWARD_BPS) / 10_000;
+
+        uint256 firstJobId = _createAndFundJob(7 days);
+        bytes32 firstDeliverable = keccak256("deliverable:baseline-deviation");
+        bytes32 firstSuccessAttestation = keccak256("attestation:baseline-approved");
+        bytes32 firstFailureAttestation = keccak256("attestation:baseline-rejected");
+
+        vm.prank(provider);
+        commerce.submit(firstJobId, firstDeliverable);
+
+        committeeEvaluator.configureJob(firstJobId, firstSuccessAttestation, firstFailureAttestation, 2, 2);
+
+        vm.prank(validatorA);
+        committeeEvaluator.castVote(firstJobId, CommitteeReviewEvaluator.VoteChoice.Approve);
+
+        vm.prank(validatorC);
+        committeeEvaluator.castVote(firstJobId, CommitteeReviewEvaluator.VoteChoice.Reject);
+
+        vm.prank(validatorB);
+        committeeEvaluator.castVote(firstJobId, CommitteeReviewEvaluator.VoteChoice.Approve);
+
+        vm.warp(block.timestamp + DISPUTE_WINDOW + 1);
+        committeeEvaluator.finalizeJobAccounting(firstJobId);
+
+        _assertValidatorAccount(validatorA, MINIMUM_STAKE, validatorReward / 2, 0, 0, true);
+        _assertValidatorAccount(validatorB, MINIMUM_STAKE, validatorReward / 2, 0, 0, true);
+        _assertValidatorAccount(validatorC, MINIMUM_STAKE, 0, 1, 0, true);
+
+        uint256 secondJobId = _createAndFundJob(7 days);
+        bytes32 secondDeliverable = keccak256("deliverable:expired-appeal-baseline");
+        bytes32 secondSuccessAttestation = keccak256("attestation:expired-appeal-baseline-approved");
+        bytes32 secondFailureAttestation = keccak256("attestation:expired-appeal-baseline-rejected");
+        bytes32 expiredResolution = keccak256("jury:expired-with-baseline-deviation");
+
+        vm.prank(provider);
+        commerce.submit(secondJobId, secondDeliverable);
+
+        committeeEvaluator.configureJob(secondJobId, secondSuccessAttestation, secondFailureAttestation, 2, 2);
+
+        vm.prank(validatorA);
+        committeeEvaluator.castVote(secondJobId, CommitteeReviewEvaluator.VoteChoice.Approve);
+
+        vm.prank(validatorC);
+        committeeEvaluator.castVote(secondJobId, CommitteeReviewEvaluator.VoteChoice.Reject);
+
+        vm.prank(validatorB);
+        committeeEvaluator.castVote(secondJobId, CommitteeReviewEvaluator.VoteChoice.Approve);
+
+        uint256 disputeBond = commerce.disputeBondAmount();
+
+        vm.prank(challenger);
+        uint256 disputeId = commerce.raiseDispute(
+            secondJobId,
+            keccak256("committee-decision"),
+            keccak256("committee://expired-baseline"),
+            keccak256("evidence://expired-baseline"),
+            disputeBond
+        );
+
+        commerce.resolveDispute(disputeId, true, IPactCommerce.Status.Expired, expiredResolution);
+        committeeEvaluator.finalizeJobAccounting(secondJobId);
+
+        _assertValidatorAccount(validatorA, MINIMUM_STAKE, validatorReward / 2, 0, 0, true);
+        _assertValidatorAccount(validatorB, MINIMUM_STAKE, validatorReward / 2, 0, 0, true);
+        _assertValidatorAccount(validatorC, MINIMUM_STAKE, 0, 1, 0, true);
     }
 
     function testCommitteeRejectsUnexpectedOptParamsHash() external {
