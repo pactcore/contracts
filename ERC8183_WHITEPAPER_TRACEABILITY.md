@@ -28,7 +28,7 @@ Whitepaper intent:
 
 Current implementation:
 - `CommitteeReviewEvaluator.VoteChoice` matches the whitepaper strategy space.
-- Committee configuration now requires the commerce job to already be `Submitted`, which keeps the validator review deadline anchored to posted evidence instead of allowing premature pre-submission review windows.
+- Committee configuration now requires the commerce job to already be `Submitted`, and it is single-shot per job, which keeps the validator review deadline anchored to posted evidence instead of allowing premature or replayed reconfiguration windows.
 - The validator share remains the commerce-layer 5% reward lane.
 - `consecutiveDeviations`, `slashAfterDisagreements`, and `slashingBps` implement repeated-deviation slashing.
 - `configureJob(...)` now pseudo-randomly samples a fixed per-job committee from the active validator set using owner-managed validator reputation weights, and `castVote(...)` rejects non-selected validators so not every staker can pile into every review.
