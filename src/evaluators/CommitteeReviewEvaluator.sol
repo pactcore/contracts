@@ -472,7 +472,6 @@ contract CommitteeReviewEvaluator is IEvaluatorSettlementRecipient, Ownable, Ree
 
         votes[jobId][msg.sender] = choice;
         jobVoters[jobId].push(msg.sender);
-        validator.pendingAccountings += 1;
 
         VoteTally storage tally = tallies[jobId];
         if (choice == VoteChoice.Approve) {
@@ -669,11 +668,11 @@ contract CommitteeReviewEvaluator is IEvaluatorSettlementRecipient, Ownable, Ree
     }
 
     function _releasePendingAccountings(uint256 jobId) internal {
-        address[] storage votersForJob = jobVoters[jobId];
-        uint256 voterCount = votersForJob.length;
+        address[] storage committeeForJob = jobCommittee[jobId];
+        uint256 committeeCount = committeeForJob.length;
 
-        for (uint256 i = 0; i < voterCount; ++i) {
-            ValidatorAccount storage validator = validators[votersForJob[i]];
+        for (uint256 i = 0; i < committeeCount; ++i) {
+            ValidatorAccount storage validator = validators[committeeForJob[i]];
             if (validator.pendingAccountings > 0) {
                 validator.pendingAccountings -= 1;
             }
@@ -713,6 +712,9 @@ contract CommitteeReviewEvaluator is IEvaluatorSettlementRecipient, Ownable, Ree
             address validatorAddress = candidates[i];
             committeeMembers[jobId][validatorAddress] = true;
             jobCommittee[jobId].push(validatorAddress);
+
+            // Reserve the selected validator's slashable stake for this review before any vote is cast.
+            validators[validatorAddress].pendingAccountings += 1;
         }
 
         emit CommitteeSelected(jobId, selectionSeed, committeeSize);

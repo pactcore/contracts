@@ -124,6 +124,44 @@ contract CommitteeReviewEvaluatorTest is Test {
         _assertValidatorAccount(validatorA, MINIMUM_STAKE - 1, 0, 0, 0, false);
     }
 
+    function testSelectedValidatorsCannotUnstakeBeforeVotingAndAreReleasedAfterAccounting() external {
+        uint256 jobId = _createAndFundJob(7 days);
+        bytes32 deliverable = keccak256("deliverable:reserved-selection");
+        bytes32 successAttestation = keccak256("attestation:reserved-selection-approved");
+        bytes32 failureAttestation = keccak256("attestation:reserved-selection-rejected");
+
+        vm.prank(provider);
+        commerce.submit(jobId, deliverable);
+
+        committeeEvaluator.configureJob(jobId, successAttestation, failureAttestation, 2, 2);
+
+        _assertValidatorAccount(validatorA, MINIMUM_STAKE, 0, 0, 1, true);
+        _assertValidatorAccount(validatorB, MINIMUM_STAKE, 0, 0, 1, true);
+        _assertValidatorAccount(validatorC, MINIMUM_STAKE, 0, 0, 1, true);
+
+        vm.prank(validatorA);
+        committeeEvaluator.castVote(jobId, CommitteeReviewEvaluator.VoteChoice.Approve);
+
+        vm.prank(validatorB);
+        committeeEvaluator.castVote(jobId, CommitteeReviewEvaluator.VoteChoice.Reject);
+
+        vm.expectRevert(abi.encodeWithSelector(CommitteeReviewEvaluator.PendingAccounting.selector, uint256(1)));
+        vm.prank(validatorC);
+        committeeEvaluator.unstake(1);
+
+        vm.warp(block.timestamp + REVIEW_DEADLINE + 1);
+        committeeEvaluator.finalizeDeadlockedJob(jobId);
+
+        vm.warp(block.timestamp + DISPUTE_WINDOW + 1);
+        committeeEvaluator.finalizeJobAccounting(jobId);
+
+        _assertValidatorAccount(validatorC, MINIMUM_STAKE, 0, 0, 0, true);
+
+        vm.prank(validatorC);
+        committeeEvaluator.unstake(1);
+        _assertValidatorAccount(validatorC, MINIMUM_STAKE - 1, 0, 0, 0, false);
+    }
+
     function testCommitteeRejectionsRefundClientAndDoNotMintRewards() external {
         uint256 jobId = _createAndFundJob(7 days);
         bytes32 deliverable = keccak256("deliverable:committee-rejection");
@@ -866,7 +904,7 @@ contract CommitteeReviewEvaluatorTest is Test {
         IPactCommerce.Job memory job = commerce.getJob(jobId);
         assertEq(uint8(job.status), uint8(IPactCommerce.Status.Rejected));
         assertEq(job.attestation, failureAttestation);
-        _assertValidatorAccount(validatorB, MINIMUM_STAKE, 0, 0, 0, true);
+        _assertValidatorAccount(validatorB, MINIMUM_STAKE, 0, 0, 1, true);
     }
 
     function testSplitVoteDeadlockCanBeResolvedAfterDeadline() external {

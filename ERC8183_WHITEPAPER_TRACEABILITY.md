@@ -31,7 +31,7 @@ Current implementation:
 - Committee configuration now requires the commerce job to already be `Submitted`, and it is single-shot per job, which keeps the validator review deadline anchored to posted evidence instead of allowing premature or replayed reconfiguration windows.
 - The validator share remains the commerce-layer 5% reward lane.
 - `consecutiveDeviations`, `slashAfterDisagreements`, and `slashingBps` implement repeated-deviation slashing.
-- `configureJob(...)` now pseudo-randomly samples a fixed per-job committee from the active validator set using owner-managed validator reputation weights, filters out validators whose current stake cannot cover the job's slashable reward requirement, and `castVote(...)` rejects non-selected validators so not every staker can pile into every review.
+- `configureJob(...)` now pseudo-randomly samples a fixed per-job committee from the active validator set using owner-managed validator reputation weights, filters out validators whose current stake cannot cover the job's slashable reward requirement, reserves pending slashable stake for every selected validator before any votes are cast, and `castVote(...)` rejects non-selected validators so not every staker can pile into every review.
 - `validatorRewardForJob(jobId)`, `minimumRequiredStakeForJob(jobId)`, committee selection, and the `castVote(...)` stake-coverage check now enforce the paper's `alpha >= R / Stake` condition per job before a validator can participate.
 - `finalizeJobAccounting(jobId)` delays reward allocation until either the dispute window expires or a raised dispute is resolved.
 
@@ -44,7 +44,7 @@ Whitepaper intent:
 Current implementation:
 - `PactCommerce.raiseDispute(...)` requires the fixed dispute bond and only allows one terminal-state dispute per job.
 - `PactCommerce.resolveDispute(...)` routes the bond differently for upheld vs. rejected disputes.
-- `CommitteeReviewEvaluator.finalizeJobAccounting(...)` waits for either dispute expiry or dispute resolution before releasing slashable stake and validator rewards, and treats upheld appeals that end in `Expired` as no-fault outcomes so unresolved review does not count as a validator disagreement.
+- `CommitteeReviewEvaluator.finalizeJobAccounting(...)` waits for either dispute expiry or dispute resolution before releasing the stake reserved at committee-selection time and validator rewards, and treats upheld appeals that end in `Expired` as no-fault outcomes so unresolved review does not count as a validator disagreement.
 
 ### 6.4 Reputation-aware policy hooks
 
