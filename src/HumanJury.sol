@@ -24,6 +24,12 @@ contract HumanJury is Ownable, ReentrancyGuard {
         bool active;
     }
 
+    struct JurorPerformance {
+        uint32 resolvedVotes;
+        uint32 alignedVotes;
+        uint32 noContestVotes;
+    }
+
     struct ReviewConfig {
         IPactCommerce.Status proposedFinalStatus;
         bytes32 upheldResolution;
@@ -44,6 +50,8 @@ contract HumanJury is Ownable, ReentrancyGuard {
     IPactCommerce public immutable commerce;
     IERC20 public immutable settlementToken;
     uint16 public constant MAX_JUROR_REPUTATION = 100;
+    uint256 private constant REPUTATION_PRIOR_WEIGHT = 4;
+    uint256 private constant RESPONSE_PRIOR_WEIGHT = 3;
 
     uint16 public immutable minimumJurorReputation;
     uint8 public immutable panelSize;
@@ -51,6 +59,9 @@ contract HumanJury is Ownable, ReentrancyGuard {
     uint256 public immutable commerceDisputeDeadline;
 
     mapping(address juror => JurorAccount) public jurors;
+    mapping(address juror => JurorPerformance) public jurorPerformances;
+    mapping(address juror => uint32 assignments) public jurorAssignments;
+    mapping(address juror => uint32 responses) public jurorResponses;
     mapping(uint256 disputeId => ReviewConfig) public reviews;
     mapping(uint256 disputeId => ReviewTally) public tallies;
     mapping(uint256 disputeId => mapping(address juror => VoteChoice choice)) public votes;
@@ -61,6 +72,16 @@ contract HumanJury is Ownable, ReentrancyGuard {
     mapping(uint256 disputeId => mapping(address juror => bool selected)) private isSelectedJuror;
 
     event JurorConfigured(address indexed juror, uint16 reputation, bool active, uint32 pendingPanels);
+    event JurorPerformanceUpdated(
+        uint256 indexed disputeId,
+        address indexed juror,
+        VoteChoice indexed jurorChoice,
+        VoteChoice finalOutcome,
+        uint16 reputation,
+        uint32 resolvedVotes,
+        uint32 alignedVotes,
+        uint32 noContestVotes
+    );
     event VoteCast(
         uint256 indexed disputeId,
         address indexed juror,
@@ -87,6 +108,7 @@ contract HumanJury is Ownable, ReentrancyGuard {
         uint256 alignedJurorCount
     );
     event RewardsClaimed(address indexed juror, uint256 amount);
+    event ReviewExpired(uint256 indexed disputeId, uint64 deadline, uint8 upholdCount, uint8 rejectCount);
 
     error ZeroAddress();
     error InvalidConfig();
@@ -103,8 +125,6 @@ contract HumanJury is Ownable, ReentrancyGuard {
     error InsufficientEligibleJurors(uint256 eligible, uint256 required);
     error ReviewDeadlineNotReached();
     error ReviewDeadlinePassed(uint256 deadline);
-
-    event ReviewExpired(uint256 indexed disputeId, uint64 deadline, uint8 upholdCount, uint8 rejectCount);
 
     constructor(
         address commerceAddress,
@@ -147,6 +167,46 @@ contract HumanJury is Ownable, ReentrancyGuard {
         account.active = active;
 
         emit JurorConfigured(juror, reputation, active, account.pendingPanels);
+    }
+
+    function jurorReputation(address juror) public view returns (uint16) {
+        uint16 baseline = jurors[juror].reputation;
+        JurorPerformance storage performance = jurorPerformances[juror];
+        if (performance.resolvedVotes == 0) {
+            return baseline;
+        }
+
+        uint256 derivedReputation =
+            (uint256(baseline) * REPUTATION_PRIOR_WEIGHT + uint256(MAX_JUROR_REPUTATION) * performance.alignedVotes)
+                / (REPUTATION_PRIOR_WEIGHT + performance.resolvedVotes);
+        if (derivedReputation == 0) {
+            return 1;
+        }
+
+        // forge-lint: disable-next-line(unsafe-typecast)
+        return uint16(derivedReputation);
+    }
+
+    function jurorResponseScore(address juror) public view returns (uint16) {
+        uint256 assignments = jurorAssignments[juror];
+        if (assignments == 0) {
+            return MAX_JUROR_REPUTATION;
+        }
+
+        uint256 derivedResponseScore =
+            (uint256(MAX_JUROR_REPUTATION) * (uint256(jurorResponses[juror]) + RESPONSE_PRIOR_WEIGHT))
+                / (assignments + RESPONSE_PRIOR_WEIGHT);
+        if (derivedResponseScore == 0) {
+            return 1;
+        }
+
+        // forge-lint: disable-next-line(unsafe-typecast)
+        return uint16(derivedResponseScore);
+    }
+
+    function jurorSelectionWeight(address juror) public view returns (uint256) {
+        uint256 weight = uint256(jurorReputation(juror)) * uint256(jurorResponseScore(juror));
+        return weight == 0 ? 1 : weight;
     }
 
     /// @notice Create a jury review panel for an open dispute.
@@ -194,6 +254,7 @@ contract HumanJury is Ownable, ReentrancyGuard {
             reviewPanels[disputeId].push(juror);
             isSelectedJuror[disputeId][juror] = true;
             jurors[juror].pendingPanels += 1;
+            jurorAssignments[juror] += 1;
         }
 
         emit ReviewCreated(
@@ -222,6 +283,7 @@ contract HumanJury is Ownable, ReentrancyGuard {
         if (votes[disputeId][msg.sender] != VoteChoice.None) revert AlreadyVoted();
 
         votes[disputeId][msg.sender] = choice;
+        jurorResponses[msg.sender] += 1;
 
         ReviewTally storage tally = tallies[disputeId];
         if (choice == VoteChoice.Uphold) {
@@ -276,6 +338,7 @@ contract HumanJury is Ownable, ReentrancyGuard {
         // Preserve the original terminal job state and refund the full bond when jury liveness fails.
         commerce.expireDispute(disputeId, review.rejectedResolution);
 
+        _recordNoContestOutcomes(disputeId);
         _releasePendingPanels(disputeId);
 
         emit ReviewResolved(disputeId, false, job.status, review.rejectedResolution, 0, 0);
@@ -307,8 +370,9 @@ contract HumanJury is Ownable, ReentrancyGuard {
         commerce.resolveDispute(disputeId, upheld, finalStatus, resolution);
         uint256 rewardAmount = settlementToken.balanceOf(address(this)) - balanceBefore;
 
-        uint256 alignedJurorCount =
-            _allocateRewards(disputeId, upheld ? VoteChoice.Uphold : VoteChoice.Reject, rewardAmount);
+        VoteChoice outcome = upheld ? VoteChoice.Uphold : VoteChoice.Reject;
+        _recordResolvedOutcomes(disputeId, outcome);
+        uint256 alignedJurorCount = _allocateRewards(disputeId, outcome, rewardAmount);
         _releasePendingPanels(disputeId);
 
         emit ReviewResolved(disputeId, upheld, finalStatus, resolution, rewardAmount, alignedJurorCount);
@@ -323,12 +387,7 @@ contract HumanJury is Ownable, ReentrancyGuard {
     ) internal view returns (address[] memory selectedJurors) {
         uint256 eligibleCount;
         for (uint256 i = 0; i < jurorRegistry.length; ++i) {
-            address jurorAddress = jurorRegistry[i];
-            JurorAccount storage juror = jurors[jurorAddress];
-            if (
-                juror.active && juror.reputation >= minimumJurorReputation
-                    && !_isReviewParticipant(jurorAddress, job, challenger)
-            ) {
+            if (_isEligibleJuror(jurorRegistry[i], job, challenger)) {
                 eligibleCount += 1;
             }
         }
@@ -341,24 +400,47 @@ contract HumanJury is Ownable, ReentrancyGuard {
         uint256 cursor;
         for (uint256 i = 0; i < jurorRegistry.length; ++i) {
             address jurorAddress = jurorRegistry[i];
-            JurorAccount storage juror = jurors[jurorAddress];
-            if (
-                juror.active && juror.reputation >= minimumJurorReputation
-                    && !_isReviewParticipant(jurorAddress, job, challenger)
-            ) {
+            if (_isEligibleJuror(jurorAddress, job, challenger)) {
                 eligibleJurors[cursor] = jurorAddress;
                 cursor += 1;
             }
         }
 
         selectedJurors = new address[](panelSize);
+
+        // Draw without replacement so higher-scoring jurors are more likely to land on each dispute panel.
         for (uint256 i = 0; i < panelSize; ++i) {
-            uint256 remaining = eligibleCount - i;
-            uint256 index =
-                uint256(keccak256(abi.encode(block.prevrandao, disputeId, jobId, evidenceHash, i))) % remaining;
-            selectedJurors[i] = eligibleJurors[index];
-            eligibleJurors[index] = eligibleJurors[remaining - 1];
+            uint256 remainingWeight;
+            for (uint256 j = i; j < eligibleJurors.length; ++j) {
+                remainingWeight += _selectionWeight(eligibleJurors[j]);
+            }
+
+            uint256 targetWeight =
+                uint256(keccak256(abi.encode(block.prevrandao, disputeId, jobId, evidenceHash, i))) % remainingWeight;
+            uint256 cumulativeWeight;
+            uint256 selectedIndex = i;
+
+            for (uint256 j = i; j < eligibleJurors.length; ++j) {
+                cumulativeWeight += _selectionWeight(eligibleJurors[j]);
+                if (targetWeight < cumulativeWeight) {
+                    selectedIndex = j;
+                    break;
+                }
+            }
+
+            (eligibleJurors[i], eligibleJurors[selectedIndex]) = (eligibleJurors[selectedIndex], eligibleJurors[i]);
+            selectedJurors[i] = eligibleJurors[i];
         }
+    }
+
+    function _isEligibleJuror(address account, IPactCommerce.Job memory job, address challenger)
+        internal
+        view
+        returns (bool)
+    {
+        JurorAccount storage juror = jurors[account];
+        return juror.active && jurorReputation(account) >= minimumJurorReputation
+            && !_isReviewParticipant(account, job, challenger);
     }
 
     function _isReviewParticipant(address account, IPactCommerce.Job memory job, address challenger)
@@ -367,6 +449,63 @@ contract HumanJury is Ownable, ReentrancyGuard {
         returns (bool)
     {
         return account == job.client || account == job.provider || account == job.evaluator || account == challenger;
+    }
+
+    function _selectionWeight(address juror) internal view returns (uint256) {
+        return jurorSelectionWeight(juror);
+    }
+
+    function _recordResolvedOutcomes(uint256 disputeId, VoteChoice outcome) internal {
+        address[] storage panel = reviewPanels[disputeId];
+        for (uint256 i = 0; i < panel.length; ++i) {
+            address jurorAddress = panel[i];
+            VoteChoice choice = votes[disputeId][jurorAddress];
+            if (choice == VoteChoice.None) {
+                continue;
+            }
+
+            JurorPerformance storage performance = jurorPerformances[jurorAddress];
+            performance.resolvedVotes += 1;
+            if (choice == outcome) {
+                performance.alignedVotes += 1;
+            }
+
+            emit JurorPerformanceUpdated(
+                disputeId,
+                jurorAddress,
+                choice,
+                outcome,
+                jurorReputation(jurorAddress),
+                performance.resolvedVotes,
+                performance.alignedVotes,
+                performance.noContestVotes
+            );
+        }
+    }
+
+    function _recordNoContestOutcomes(uint256 disputeId) internal {
+        address[] storage panel = reviewPanels[disputeId];
+        for (uint256 i = 0; i < panel.length; ++i) {
+            address jurorAddress = panel[i];
+            VoteChoice choice = votes[disputeId][jurorAddress];
+            if (choice == VoteChoice.None) {
+                continue;
+            }
+
+            JurorPerformance storage performance = jurorPerformances[jurorAddress];
+            performance.noContestVotes += 1;
+
+            emit JurorPerformanceUpdated(
+                disputeId,
+                jurorAddress,
+                choice,
+                VoteChoice.None,
+                jurorReputation(jurorAddress),
+                performance.resolvedVotes,
+                performance.alignedVotes,
+                performance.noContestVotes
+            );
+        }
     }
 
     function _releasePendingPanels(uint256 disputeId) internal {

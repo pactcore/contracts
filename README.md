@@ -138,7 +138,8 @@ File: `src/HumanJury.sol`
 
 Purpose:
 - Turns terminal-state `raiseDispute(...)` appeals into a concrete Layer-3 jury contract instead of leaving review as a bare `owner()` action.
-- Maintains a registry of high-reputation jurors, pseudo-randomly selects an odd-sized 5-11 member panel per dispute while excluding the job's client/provider/evaluator and the active challenger, and tracks per-dispute `Uphold` / `Reject` votes.
+- Maintains a registry of high-reputation jurors, pseudo-randomly samples an odd-sized 5-11 member panel per dispute while excluding the job's client/provider/evaluator and the active challenger, and tracks per-dispute `Uphold` / `Reject` votes.
+- Blends owner-set juror baselines with onchain aligned-outcome history plus assignment/response tracking, exposes derived juror reputation / response scores / selection weights onchain, and feeds those signals back into future panel selection so repeated no-shows or weak outcomes are downranked over time.
 - Calls `resolveDispute(...)` once the panel reaches a majority and, when `PactCommerce` ownership is delegated to the jury contract, becomes the onchain jury recipient for dispute-bond payouts.
 - Anchors each jury deadline to the dispute's original `openedAt` timestamp and requires the jury deadline configuration to match `PactCommerce`'s dispute-expiry window, so late-created panels cannot outlive or be bypassed by the commerce-layer expiry path.
 - Routes stalled review expiry through `expireDispute(...)`, preserving the original terminal job state while refunding the challenger's full bond when jury liveness fails.
@@ -190,7 +191,7 @@ The rest of the repository remains unchanged:
 
 `test/CommitteeReviewEvaluator.t.sol` covers committee approval and rejection flows, reputation- and response-weighted sampled-committee membership enforcement, stake-coverage-aware committee capacity checks, selected-validator unstake locks until accounting finalization, dispute-window gating, jury/dispute overrides of validator accounting, expired-appeal no-fault accounting, reward splitting across aligned validators, opt-params hash binding, performance-derived validator reputation updates, no-show penalties in future selection, and slashing after three consecutive deviations.
 
-`test/HumanJury.t.sol` covers high-reputation jury-panel selection, low-reputation juror exclusion, upheld-vs-rejected dispute outcomes, jury reward distribution, and the bridge from committee review into final jury accounting.
+`test/HumanJury.t.sol` covers high-reputation jury-panel selection, low-reputation juror exclusion, upheld-vs-rejected dispute outcomes, jury reward distribution, performance-derived juror reputation and response scoring, weighted juror selection, and the bridge from committee review into final jury accounting.
 
 `test/PactGovernance.t.sol` also covers governance-authored ERC-8183 decision and dispute proposals and verifies the encoded call target/data for both helper paths.
 

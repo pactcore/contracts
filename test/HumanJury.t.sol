@@ -28,6 +28,7 @@ contract HumanJuryTest is Test {
     address private jurorC = makeAddr("jurorC");
     address private jurorD = makeAddr("jurorD");
     address private jurorE = makeAddr("jurorE");
+    address private jurorF = makeAddr("jurorF");
     address private lowReputationJuror = makeAddr("lowReputationJuror");
 
     uint256 private constant INITIAL_BALANCE = 20_000e6;
@@ -489,6 +490,134 @@ contract HumanJuryTest is Test {
         humanJury.expireReview(disputeId);
     }
 
+    function testJurorReputationImprovesAfterAlignedVote() external {
+        uint256 jobId = _createAndFundDirectReviewJob(7 days);
+        bytes32 deliverable = keccak256("deliverable:juror-reputation");
+        bytes32 completionAttestation = keccak256("attestation:juror-reputation");
+
+        vm.prank(provider);
+        commerce.submit(jobId, deliverable);
+
+        vm.prank(evaluator);
+        commerce.complete(jobId, completionAttestation);
+
+        uint256 disputeBond = commerce.disputeBondAmount();
+
+        vm.prank(challenger);
+        uint256 disputeId = commerce.raiseDispute(
+            jobId,
+            keccak256("human-review"),
+            keccak256("completion://juror-reputation"),
+            keccak256("evidence://juror-reputation"),
+            disputeBond
+        );
+
+        commerce.transferOwnership(address(humanJury));
+
+        assertEq(humanJury.jurorReputation(jurorA), 95);
+
+        humanJury.createReview(disputeId, IPactCommerce.Status.Rejected, keccak256("upheld"), keccak256("rejected"));
+
+        vm.prank(jurorA);
+        humanJury.castVote(disputeId, HumanJury.VoteChoice.Uphold);
+        vm.prank(jurorB);
+        humanJury.castVote(disputeId, HumanJury.VoteChoice.Uphold);
+        vm.prank(jurorC);
+        humanJury.castVote(disputeId, HumanJury.VoteChoice.Uphold);
+
+        (uint32 resolvedVotes, uint32 alignedVotes, uint32 noContestVotes) = humanJury.jurorPerformances(jurorA);
+        assertEq(resolvedVotes, 1);
+        assertEq(alignedVotes, 1);
+        assertEq(noContestVotes, 0);
+        assertEq(humanJury.jurorReputation(jurorA), 96);
+        assertEq(humanJury.jurorReputation(jurorD), 88);
+    }
+
+    function testJurorResponseScorePenalizesNoShows() external {
+        uint256 jobId = _createAndFundDirectReviewJob(7 days);
+        bytes32 deliverable = keccak256("deliverable:juror-response-score");
+        bytes32 completionAttestation = keccak256("attestation:juror-response-score");
+
+        vm.prank(provider);
+        commerce.submit(jobId, deliverable);
+
+        vm.prank(evaluator);
+        commerce.complete(jobId, completionAttestation);
+
+        uint256 disputeBond = commerce.disputeBondAmount();
+
+        vm.prank(challenger);
+        uint256 disputeId = commerce.raiseDispute(
+            jobId,
+            keccak256("human-review"),
+            keccak256("completion://juror-response-score"),
+            keccak256("evidence://juror-response-score"),
+            disputeBond
+        );
+
+        commerce.transferOwnership(address(humanJury));
+
+        humanJury.createReview(disputeId, IPactCommerce.Status.Rejected, keccak256("upheld"), keccak256("rejected"));
+
+        vm.prank(jurorA);
+        humanJury.castVote(disputeId, HumanJury.VoteChoice.Uphold);
+        vm.prank(jurorB);
+        humanJury.castVote(disputeId, HumanJury.VoteChoice.Reject);
+
+        vm.warp(block.timestamp + REVIEW_DEADLINE_DURATION + 1);
+        humanJury.expireReview(disputeId);
+
+        assertEq(humanJury.jurorAssignments(jurorA), 1);
+        assertEq(humanJury.jurorResponses(jurorA), 1);
+        assertEq(humanJury.jurorResponseScore(jurorA), 100);
+
+        assertEq(humanJury.jurorAssignments(jurorC), 1);
+        assertEq(humanJury.jurorResponses(jurorC), 0);
+        assertEq(humanJury.jurorResponseScore(jurorC), 75);
+
+        (uint32 resolvedVotes, uint32 alignedVotes, uint32 noContestVotes) = humanJury.jurorPerformances(jurorA);
+        assertEq(resolvedVotes, 0);
+        assertEq(alignedVotes, 0);
+        assertEq(noContestVotes, 1);
+    }
+
+    function testWeightedJurorSelectionUsesReputationWeights() external {
+        bool foundWeightedDifference;
+
+        for (uint256 seed = 1; seed <= 64; ++seed) {
+            (HumanJury highWeightJury, uint256 highWeightDisputeId) = _buildWeightedSelectionHarness(100, 80);
+            vm.prevrandao(bytes32(seed));
+            highWeightJury.createReview(
+                highWeightDisputeId,
+                IPactCommerce.Status.Rejected,
+                keccak256("upheld-weighted-selection"),
+                keccak256("rejected-weighted-selection")
+            );
+            address[] memory highWeightPanel = highWeightJury.getPanel(highWeightDisputeId);
+
+            (HumanJury swappedWeightJury, uint256 swappedWeightDisputeId) = _buildWeightedSelectionHarness(80, 100);
+            vm.prevrandao(bytes32(seed));
+            swappedWeightJury.createReview(
+                swappedWeightDisputeId,
+                IPactCommerce.Status.Rejected,
+                keccak256("upheld-weighted-selection"),
+                keccak256("rejected-weighted-selection")
+            );
+            address[] memory swappedWeightPanel = swappedWeightJury.getPanel(swappedWeightDisputeId);
+
+            bool highWeightPrefersJurorA = _contains(highWeightPanel, jurorA) && !_contains(highWeightPanel, jurorB);
+            bool swappedWeightPrefersJurorB =
+                !_contains(swappedWeightPanel, jurorA) && _contains(swappedWeightPanel, jurorB);
+
+            if (highWeightPrefersJurorA && swappedWeightPrefersJurorB) {
+                foundWeightedDifference = true;
+                break;
+            }
+        }
+
+        assertTrue(foundWeightedDifference);
+    }
+
     function _approveAndStake(address validator, uint256 amount) internal {
         vm.startPrank(validator);
         usdc.approve(address(committeeEvaluator), type(uint256).max);
@@ -535,6 +664,64 @@ contract HumanJuryTest is Test {
 
         vm.prank(client);
         commerce.fund(jobId, BUDGET);
+    }
+
+    function _buildWeightedSelectionHarness(uint16 jurorAReputation, uint16 jurorBReputation)
+        internal
+        returns (HumanJury harnessJury, uint256 disputeId)
+    {
+        MockUSDC harnessUsdc = new MockUSDC();
+        PactCommerce harnessCommerce = new PactCommerce(address(harnessUsdc), treasury, PLATFORM_FEE_BPS);
+        harnessJury = new HumanJury(
+            address(harnessCommerce),
+            address(harnessUsdc),
+            MINIMUM_JUROR_REPUTATION,
+            JURY_PANEL_SIZE,
+            REVIEW_DEADLINE_DURATION
+        );
+
+        harnessUsdc.mint(client, INITIAL_BALANCE);
+        harnessUsdc.mint(challenger, CHALLENGER_BANKROLL);
+
+        vm.prank(client);
+        harnessUsdc.approve(address(harnessCommerce), type(uint256).max);
+
+        vm.prank(challenger);
+        harnessUsdc.approve(address(harnessCommerce), type(uint256).max);
+
+        harnessJury.configureJuror(jurorA, jurorAReputation, true);
+        harnessJury.configureJuror(jurorB, jurorBReputation, true);
+        harnessJury.configureJuror(jurorC, 80, true);
+        harnessJury.configureJuror(jurorD, 80, true);
+        harnessJury.configureJuror(jurorE, 80, true);
+        harnessJury.configureJuror(jurorF, 80, true);
+
+        vm.prank(client);
+        uint256 jobId = harnessCommerce.createJob(provider, evaluator, block.timestamp + 7 days, "weighted jury job");
+
+        vm.prank(client);
+        harnessCommerce.setBudget(jobId, BUDGET);
+
+        vm.prank(client);
+        harnessCommerce.fund(jobId, BUDGET);
+
+        vm.prank(provider);
+        harnessCommerce.submit(jobId, keccak256("deliverable:weighted-jury"));
+
+        vm.prank(evaluator);
+        harnessCommerce.complete(jobId, keccak256("attestation:weighted-jury"));
+
+        uint256 disputeBond = harnessCommerce.disputeBondAmount();
+        vm.prank(challenger);
+        disputeId = harnessCommerce.raiseDispute(
+            jobId,
+            keccak256("human-review"),
+            keccak256("completion://weighted-jury"),
+            keccak256("evidence://weighted-jury"),
+            disputeBond
+        );
+
+        harnessCommerce.transferOwnership(address(harnessJury));
     }
 
     function _contains(address[] memory values, address target) internal pure returns (bool) {
