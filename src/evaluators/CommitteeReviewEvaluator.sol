@@ -27,6 +27,13 @@ contract CommitteeReviewEvaluator is IEvaluatorSettlementRecipient, Ownable, Ree
         bool active;
     }
 
+    struct ValidatorPerformance {
+        uint32 resolvedVotes;
+        uint32 alignedVotes;
+        uint32 disputedVotes;
+        uint32 noContestVotes;
+    }
+
     struct JobConfig {
         bytes32 successAttestation;
         bytes32 failureAttestation;
@@ -55,6 +62,7 @@ contract CommitteeReviewEvaluator is IEvaluatorSettlementRecipient, Ownable, Ree
     }
 
     uint16 public constant MAX_VALIDATOR_REPUTATION = 100;
+    uint256 private constant REPUTATION_PRIOR_WEIGHT = 4;
 
     IPactCommerce public immutable commerce;
     IERC20 public immutable settlementToken;
@@ -66,7 +74,9 @@ contract CommitteeReviewEvaluator is IEvaluatorSettlementRecipient, Ownable, Ree
     uint8 public immutable slashAfterDisagreements;
 
     mapping(address validator => ValidatorAccount) public validators;
+    mapping(address validator => ValidatorPerformance performance) public validatorPerformances;
     mapping(address validator => uint16 reputation) private validatorReputations;
+    mapping(address validator => bool initialized) private validatorReputationInitialized;
     mapping(uint256 jobId => JobConfig) public jobConfigs;
     mapping(uint256 jobId => JobResolution) public jobResolutions;
     mapping(uint256 jobId => VoteTally) public tallies;
@@ -81,6 +91,17 @@ contract CommitteeReviewEvaluator is IEvaluatorSettlementRecipient, Ownable, Ree
     event ValidatorStaked(address indexed validator, uint256 amount, uint256 newStake, bool active);
     event ValidatorUnstaked(address indexed validator, uint256 amount, uint256 newStake, bool active);
     event ValidatorReputationUpdated(address indexed validator, uint16 reputation);
+    event ValidatorPerformanceUpdated(
+        uint256 indexed jobId,
+        address indexed validator,
+        VoteChoice indexed validatorChoice,
+        VoteChoice finalOutcome,
+        bool disputed,
+        uint16 reputation,
+        uint32 resolvedVotes,
+        uint32 alignedVotes,
+        uint32 noContestVotes
+    );
     event RewardsClaimed(address indexed validator, uint256 amount);
     event JobConfigured(
         uint256 indexed jobId,
@@ -237,16 +258,27 @@ contract CommitteeReviewEvaluator is IEvaluatorSettlementRecipient, Ownable, Ree
         }
 
         validatorReputations[validator] = reputation;
+        validatorReputationInitialized[validator] = true;
         emit ValidatorReputationUpdated(validator, reputation);
     }
 
     function validatorReputation(address validator) public view returns (uint16) {
-        uint16 reputation = validatorReputations[validator];
-        if (reputation == 0) {
-            return MAX_VALIDATOR_REPUTATION;
+        uint16 baseline =
+            validatorReputationInitialized[validator] ? validatorReputations[validator] : MAX_VALIDATOR_REPUTATION;
+        ValidatorPerformance storage performance = validatorPerformances[validator];
+        if (performance.resolvedVotes == 0) {
+            return baseline;
         }
 
-        return reputation;
+        uint256 derivedReputation =
+            (uint256(baseline) * REPUTATION_PRIOR_WEIGHT + uint256(MAX_VALIDATOR_REPUTATION) * performance.alignedVotes)
+                / (REPUTATION_PRIOR_WEIGHT + performance.resolvedVotes);
+        if (derivedReputation == 0) {
+            return 1;
+        }
+
+        // forge-lint: disable-next-line(unsafe-typecast)
+        return uint16(derivedReputation);
     }
 
     function configureJob(
@@ -309,7 +341,7 @@ contract CommitteeReviewEvaluator is IEvaluatorSettlementRecipient, Ownable, Ree
 
         resolution.accountingFinalized = true;
 
-        uint256 alignedValidatorCount = _settleValidatorAccounting(jobId, finalOutcome);
+        uint256 alignedValidatorCount = _settleValidatorAccounting(jobId, finalOutcome, disputed);
         _releasePendingAccountings(jobId);
 
         uint256 rewardAmount = resolution.rewardAmount;
@@ -529,23 +561,29 @@ contract CommitteeReviewEvaluator is IEvaluatorSettlementRecipient, Ownable, Ree
         revert InvalidJobStatus();
     }
 
-    function _settleValidatorAccounting(uint256 jobId, VoteChoice outcome)
+    function _settleValidatorAccounting(uint256 jobId, VoteChoice outcome, bool disputed)
         internal
         returns (uint256 alignedValidatorCount)
     {
-        // An upheld appeal can expire the job without affirming either committee side.
-        // In that case the validator panel should neither earn rewards nor accrue deviations.
-        if (outcome == VoteChoice.None) {
-            return 0;
-        }
-
         address[] storage votersForJob = jobVoters[jobId];
         uint256 voterCount = votersForJob.length;
+
+        // An upheld appeal can expire the job without affirming either committee side.
+        // In that case the validator panel should keep its existing deviation counts while the vote is still
+        // recorded as a contested review attempt for future reputation and audit surfaces.
+        if (outcome == VoteChoice.None) {
+            for (uint256 i = 0; i < voterCount; ++i) {
+                _recordNoContestOutcome(jobId, votersForJob[i], votes[jobId][votersForJob[i]], disputed);
+            }
+            return 0;
+        }
 
         for (uint256 i = 0; i < voterCount; ++i) {
             address validatorAddress = votersForJob[i];
             VoteChoice validatorChoice = votes[jobId][validatorAddress];
             ValidatorAccount storage validator = validators[validatorAddress];
+
+            _recordResolvedOutcome(jobId, validatorAddress, validatorChoice, outcome, disputed);
 
             if (validatorChoice == outcome) {
                 validator.consecutiveDeviations = 0;
@@ -577,6 +615,57 @@ contract CommitteeReviewEvaluator is IEvaluatorSettlementRecipient, Ownable, Ree
 
             emit ValidatorSlashed(jobId, validatorAddress, slashAmount, slashAfterDisagreements, outcome);
         }
+    }
+
+    function _recordResolvedOutcome(
+        uint256 jobId,
+        address validatorAddress,
+        VoteChoice validatorChoice,
+        VoteChoice finalOutcome,
+        bool disputed
+    ) internal {
+        ValidatorPerformance storage performance = validatorPerformances[validatorAddress];
+        performance.resolvedVotes += 1;
+        if (validatorChoice == finalOutcome) {
+            performance.alignedVotes += 1;
+        }
+        if (disputed) {
+            performance.disputedVotes += 1;
+        }
+
+        emit ValidatorPerformanceUpdated(
+            jobId,
+            validatorAddress,
+            validatorChoice,
+            finalOutcome,
+            disputed,
+            validatorReputation(validatorAddress),
+            performance.resolvedVotes,
+            performance.alignedVotes,
+            performance.noContestVotes
+        );
+    }
+
+    function _recordNoContestOutcome(uint256 jobId, address validatorAddress, VoteChoice validatorChoice, bool disputed)
+        internal
+    {
+        ValidatorPerformance storage performance = validatorPerformances[validatorAddress];
+        performance.noContestVotes += 1;
+        if (disputed) {
+            performance.disputedVotes += 1;
+        }
+
+        emit ValidatorPerformanceUpdated(
+            jobId,
+            validatorAddress,
+            validatorChoice,
+            VoteChoice.None,
+            disputed,
+            validatorReputation(validatorAddress),
+            performance.resolvedVotes,
+            performance.alignedVotes,
+            performance.noContestVotes
+        );
     }
 
     function _releasePendingAccountings(uint256 jobId) internal {

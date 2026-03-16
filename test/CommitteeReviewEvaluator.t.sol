@@ -186,6 +186,11 @@ contract CommitteeReviewEvaluatorTest is Test {
         assertEq(usdc.balanceOf(treasury), treasuryBefore + treasuryFees + slashAmount);
 
         _assertValidatorAccount(validatorC, MINIMUM_STAKE - slashAmount, 0, 0, 0, false);
+        _assertValidatorPerformance(validatorA, 3, 3, 0, 0);
+        _assertValidatorPerformance(validatorB, 3, 3, 0, 0);
+        _assertValidatorPerformance(validatorC, 3, 0, 0, 0);
+        assertEq(committeeEvaluator.validatorReputation(validatorA), 100);
+        assertEq(committeeEvaluator.validatorReputation(validatorC), 57);
     }
 
     function testDisputeResolutionCanOverrideCommitteeAccountingAndRewards() external {
@@ -243,6 +248,12 @@ contract CommitteeReviewEvaluatorTest is Test {
         _assertValidatorAccount(validatorA, MINIMUM_STAKE, 0, 1, 0, true);
         _assertValidatorAccount(validatorB, MINIMUM_STAKE, 0, 1, 0, true);
         _assertValidatorAccount(validatorC, MINIMUM_STAKE, validatorReward, 0, 0, true);
+        _assertValidatorPerformance(validatorA, 1, 0, 1, 0);
+        _assertValidatorPerformance(validatorB, 1, 0, 1, 0);
+        _assertValidatorPerformance(validatorC, 1, 1, 1, 0);
+        assertEq(committeeEvaluator.validatorReputation(validatorA), 80);
+        assertEq(committeeEvaluator.validatorReputation(validatorB), 80);
+        assertEq(committeeEvaluator.validatorReputation(validatorC), 100);
 
         uint256 validatorCBalanceBefore = usdc.balanceOf(validatorC);
         vm.prank(validatorC);
@@ -371,6 +382,11 @@ contract CommitteeReviewEvaluatorTest is Test {
         _assertValidatorAccount(validatorA, MINIMUM_STAKE, validatorReward / 2, 0, 0, true);
         _assertValidatorAccount(validatorB, MINIMUM_STAKE, validatorReward / 2, 0, 0, true);
         _assertValidatorAccount(validatorC, MINIMUM_STAKE, 0, 1, 0, true);
+        _assertValidatorPerformance(validatorA, 1, 1, 1, 1);
+        _assertValidatorPerformance(validatorB, 1, 1, 1, 1);
+        _assertValidatorPerformance(validatorC, 1, 0, 1, 1);
+        assertEq(committeeEvaluator.validatorReputation(validatorA), 100);
+        assertEq(committeeEvaluator.validatorReputation(validatorC), 80);
     }
 
     function testCommitteeRejectsUnexpectedOptParamsHash() external {
@@ -794,6 +810,33 @@ contract CommitteeReviewEvaluatorTest is Test {
         committeeEvaluator.setValidatorReputation(validatorA, 101);
     }
 
+    function testConfiguredValidatorReputationActsAsBaselineForDerivedScore() external {
+        committeeEvaluator.setValidatorReputation(validatorA, 40);
+        assertEq(committeeEvaluator.validatorReputation(validatorA), 40);
+
+        uint256 jobId = _createAndFundJob(7 days);
+        bytes32 deliverable = keccak256("deliverable:baseline-reputation");
+        bytes32 successAttestation = keccak256("attestation:baseline-reputation-approved");
+        bytes32 failureAttestation = keccak256("attestation:baseline-reputation-rejected");
+
+        vm.prank(provider);
+        commerce.submit(jobId, deliverable);
+
+        committeeEvaluator.configureJob(jobId, successAttestation, failureAttestation, 2, 2);
+
+        vm.prank(validatorA);
+        committeeEvaluator.castVote(jobId, CommitteeReviewEvaluator.VoteChoice.Approve);
+
+        vm.prank(validatorB);
+        committeeEvaluator.castVote(jobId, CommitteeReviewEvaluator.VoteChoice.Approve);
+
+        vm.warp(block.timestamp + DISPUTE_WINDOW + 1);
+        committeeEvaluator.finalizeJobAccounting(jobId);
+
+        _assertValidatorPerformance(validatorA, 1, 1, 0, 0);
+        assertEq(committeeEvaluator.validatorReputation(validatorA), 52);
+    }
+
     function testCommitteeRejectsLateVotesAfterDeadline() external {
         uint256 jobId = _createAndFundJob(7 days);
         bytes32 deliverable = keccak256("deliverable:late-vote");
@@ -975,6 +1018,21 @@ contract CommitteeReviewEvaluatorTest is Test {
         assertEq(deviationCount, expectedDeviations);
         assertEq(pendingAccountings, expectedPendingAccountings);
         assertEq(active, expectedActive);
+    }
+
+    function _assertValidatorPerformance(
+        address validator,
+        uint32 expectedResolvedVotes,
+        uint32 expectedAlignedVotes,
+        uint32 expectedDisputedVotes,
+        uint32 expectedNoContestVotes
+    ) internal view {
+        (uint32 resolvedVotes, uint32 alignedVotes, uint32 disputedVotes, uint32 noContestVotes) =
+            committeeEvaluator.validatorPerformances(validator);
+        assertEq(resolvedVotes, expectedResolvedVotes);
+        assertEq(alignedVotes, expectedAlignedVotes);
+        assertEq(disputedVotes, expectedDisputedVotes);
+        assertEq(noContestVotes, expectedNoContestVotes);
     }
 
     function _createAndFundJob(uint256 expiryOffset) internal returns (uint256 jobId) {

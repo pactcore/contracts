@@ -127,6 +127,7 @@ Purpose:
 - Lets selected validators stake the settlement token, cast `Approve` / `Reject` / `Uncertain` votes, and resolve a submitted job once an approval or rejection threshold is met.
 - Routes the validator settlement share into the evaluator contract, rejects votes when a validator's stake cannot economically cover the job's validator reward share, and only finalizes validator rewards after either the committee dispute window expires or a terminal `raiseDispute(...)` challenge is resolved; appeals that end in an `Expired` final job state now withhold validator rewards without counting the unresolved review as a validator deviation.
 - Tracks consecutive deviations from the final committee-or-jury outcome and slashes validator stake after a configurable number of disagreements, so jury/governance review can override committee-majority accounting instead of merely annotating it.
+- Blends owner-set validator baselines with onchain final-outcome accuracy, tracking resolved/aligned/no-contest review history and feeding that back into future reputation-weighted committee selection.
 - Locks validator unstaking while they still have unresolved committee jobs, preserving slashable stake until the whitepaper-style appeal lane finishes.
 - Can optionally bind votes to the hash of opaque evaluator `optParams`, so receipt bundles or evidence payloads stay hash-checked all the way into settlement.
 
@@ -187,7 +188,7 @@ The rest of the repository remains unchanged:
 - rollback when an `afterAction` policy hook rejects settlement
 - deterministic evaluator completion and rejection paths, including forwarded opaque evaluation params, hash-bound proof bundle checks, and one-shot expectation consumption
 
-`test/CommitteeReviewEvaluator.t.sol` covers committee approval and rejection flows, reputation-weighted sampled-committee membership enforcement, stake-coverage-aware committee capacity checks, dispute-window gating, jury/dispute overrides of validator accounting, expired-appeal no-fault accounting, reward splitting across aligned validators, opt-params hash binding, and slashing after three consecutive deviations.
+`test/CommitteeReviewEvaluator.t.sol` covers committee approval and rejection flows, reputation-weighted sampled-committee membership enforcement, stake-coverage-aware committee capacity checks, dispute-window gating, jury/dispute overrides of validator accounting, expired-appeal no-fault accounting, reward splitting across aligned validators, opt-params hash binding, performance-derived validator reputation updates, and slashing after three consecutive deviations.
 
 `test/HumanJury.t.sol` covers high-reputation jury-panel selection, low-reputation juror exclusion, upheld-vs-rejected dispute outcomes, jury reward distribution, and the bridge from committee review into final jury accounting.
 
