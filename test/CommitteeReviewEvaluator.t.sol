@@ -399,7 +399,7 @@ contract CommitteeReviewEvaluatorTest is Test {
         committeeEvaluator.castVote(jobId, CommitteeReviewEvaluator.VoteChoice.Approve, wrongOptParams);
     }
 
-    function testCommitteeRequiresStakeCoverageForValidatorReward() external {
+    function testConfigureJobRevertsWhenTooFewValidatorsCanCoverReward() external {
         uint256 undercollateralizedMinimumStake = 300e6;
         CommitteeReviewEvaluator undercollateralizedEvaluator = new CommitteeReviewEvaluator(
             address(commerce),
@@ -414,10 +414,9 @@ contract CommitteeReviewEvaluatorTest is Test {
         address undercollateralizedValidator = makeAddr("undercollateralizedValidator");
 
         usdc.mint(undercollateralizedValidator, VALIDATOR_BANKROLL);
-        vm.startPrank(undercollateralizedValidator);
-        usdc.approve(address(undercollateralizedEvaluator), type(uint256).max);
-        undercollateralizedEvaluator.stake(undercollateralizedMinimumStake);
-        vm.stopPrank();
+        _approveAndStake(
+            address(undercollateralizedEvaluator), undercollateralizedValidator, undercollateralizedMinimumStake
+        );
 
         vm.prank(client);
         uint256 jobId = commerce.createJob(
@@ -433,14 +432,6 @@ contract CommitteeReviewEvaluatorTest is Test {
         vm.prank(provider);
         commerce.submit(jobId, keccak256("deliverable:stake-coverage"));
 
-        undercollateralizedEvaluator.configureJob(
-            jobId,
-            keccak256("attestation:stake-coverage-approved"),
-            keccak256("attestation:stake-coverage-rejected"),
-            1,
-            1
-        );
-
         uint256 validatorReward = undercollateralizedEvaluator.validatorRewardForJob(jobId);
         uint256 requiredStake = undercollateralizedEvaluator.minimumRequiredStakeForJob(jobId);
         assertEq(validatorReward, (BUDGET * VALIDATOR_REWARD_BPS) / 10_000);
@@ -448,14 +439,70 @@ contract CommitteeReviewEvaluatorTest is Test {
 
         vm.expectRevert(
             abi.encodeWithSelector(
-                CommitteeReviewEvaluator.RewardExceedsSlashableStake.selector,
-                validatorReward,
-                requiredStake,
-                undercollateralizedMinimumStake
+                CommitteeReviewEvaluator.InsufficientEligibleValidators.selector, uint256(0), uint256(1)
             )
         );
+        undercollateralizedEvaluator.configureJob(
+            jobId,
+            keccak256("attestation:stake-coverage-approved"),
+            keccak256("attestation:stake-coverage-rejected"),
+            1,
+            1
+        );
+    }
+
+    function testSampledCommitteeExcludesValidatorsWithoutSlashCoverage() external {
+        uint256 undercollateralizedMinimumStake = 300e6;
+        CommitteeReviewEvaluator mixedStakeEvaluator = new CommitteeReviewEvaluator(
+            address(commerce),
+            address(usdc),
+            undercollateralizedMinimumStake,
+            DISPUTE_WINDOW,
+            REVIEW_DEADLINE,
+            SLASHING_BPS,
+            SLASH_AFTER_DISAGREEMENTS,
+            treasury
+        );
+        address undercollateralizedValidator = makeAddr("undercollateralizedValidator");
+        address healthyValidator = makeAddr("healthyValidator");
+
+        usdc.mint(undercollateralizedValidator, VALIDATOR_BANKROLL);
+        usdc.mint(healthyValidator, VALIDATOR_BANKROLL);
+        _approveAndStake(address(mixedStakeEvaluator), undercollateralizedValidator, undercollateralizedMinimumStake);
+        _approveAndStake(address(mixedStakeEvaluator), healthyValidator, 500e6);
+
+        vm.prank(client);
+        uint256 jobId = commerce.createJob(
+            provider, address(mixedStakeEvaluator), block.timestamp + 7 days, "committee-reviewed ERC-8183 job"
+        );
+
+        vm.prank(client);
+        commerce.setBudget(jobId, BUDGET);
+
+        vm.prank(client);
+        commerce.fund(jobId, BUDGET);
+
+        vm.prank(provider);
+        commerce.submit(jobId, keccak256("deliverable:sampled-stake-coverage"));
+
+        mixedStakeEvaluator.configureJob(
+            jobId,
+            keccak256("attestation:sampled-stake-coverage-approved"),
+            keccak256("attestation:sampled-stake-coverage-rejected"),
+            1,
+            1
+        );
+
+        address[] memory committee = mixedStakeEvaluator.getCommittee(jobId);
+        assertEq(committee.length, 1);
+        assertEq(committee[0], healthyValidator);
+        assertFalse(_containsAddress(committee, undercollateralizedValidator));
+
+        vm.expectRevert(
+            abi.encodeWithSelector(CommitteeReviewEvaluator.ValidatorNotSelected.selector, undercollateralizedValidator)
+        );
         vm.prank(undercollateralizedValidator);
-        undercollateralizedEvaluator.castVote(jobId, CommitteeReviewEvaluator.VoteChoice.Approve);
+        mixedStakeEvaluator.castVote(jobId, CommitteeReviewEvaluator.VoteChoice.Approve);
     }
 
     function testConfigureJobRevertsBeforeProviderSubmission() external {
