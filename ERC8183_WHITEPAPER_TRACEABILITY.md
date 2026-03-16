@@ -16,7 +16,7 @@ Current implementation:
 - Validators stake the settlement token, vote `Approve` / `Reject` / `Uncertain`, and only receive the validator share after dispute-aware accounting finalizes.
 - Committee selection now excludes the job's client/provider/evaluator so the sampled validator panel stays independent from the job participants it is reviewing.
 - `src/PactCommerce.sol` provides the terminal-state dispute bond lane used for appeal escalation.
-- `src/HumanJury.sol` now models Layer 3 as an explicit high-reputation jury registry with pseudo-random weighted 5-11 juror panel selection, majority voting, aligned-juror reward routing from dispute bonds, participant-exclusion rules for the client/provider/evaluator/challenger set, owner-set baseline juror scores blended with onchain aligned-outcome and response-rate signals, and dispute-open-time-anchored review deadlines so jury panels cannot outlive the commerce-layer dispute expiry window.
+- `src/HumanJury.sol` now models Layer 3 as an explicit high-reputation jury registry with pseudo-random 5-11 juror panel selection, majority voting, aligned-juror reward routing from dispute bonds, participant-exclusion rules for the client/provider/evaluator/challenger set, dispute-open-time-anchored review deadlines so jury panels cannot outlive the commerce-layer dispute expiry window, and onchain juror accuracy/response plus pending-panel load telemetry that feeds back into future panel-selection weights.
 - `src/evaluators/GovernanceReviewEvaluator.sol` remains the governance/DAO escalation path above the jury lane.
 
 ### 8.1 Validator game and slashing
@@ -54,14 +54,13 @@ Whitepaper intent:
 Current implementation:
 - `src/hooks/ReputationGateHook.sol` and `src/hooks/CounterpartyPolicyHook.sol` enforce provider-score gating and evaluator allowlists around the ERC-8183 commerce flow.
 - `src/evaluators/CommitteeReviewEvaluator.sol` also supports owner-managed validator reputation baselines in the whitepaper's 0-100 range, records resolved/aligned/no-contest vote history plus committee assignment/response history onchain, and feeds those performance signals back into per-job committee selection weights.
-- `src/HumanJury.sol` now persists jury assignment/response counts plus aligned-vs-no-contest vote history onchain, derives juror reputation and response scores from those signals, and uses the combined weight in future panel selection so Layer 3 review is no longer a flat draw among all active baseline-approved jurors.
 
 ## Explicit remaining gaps
 
 The current contracts intentionally stop short of full whitepaper parity in a few places:
 - No onchain Layer 1 auto-validation module exists yet; the repo starts at ERC-8183 job submission plus evaluator review.
 - Committee selection is now pseudo-random per job and combines baseline reputation, onchain review accuracy, and committee response history, but it still relies on `block.prevrandao` plus owner-configured baseline scores and does not yet derive weights from uptime or appeal win rate.
-- Juror eligibility is now weighted by owner-set baselines plus onchain alignment/response signals, but the full whitepaper reputation system still stops short of explicit appeal win-rate accounting, richer uptime tracking, and broader cross-protocol juror score propagation.
+- Juror eligibility is reputation-gated and panel selection now blends baseline reputation with onchain appeal accuracy, response history, and concurrent panel load, but the broader whitepaper reputation system still stops short of full cross-role uptime scoring, non-jury reputation propagation, and stronger-than-`block.prevrandao` entropy for panel draws.
 
 ## Validation run
 
