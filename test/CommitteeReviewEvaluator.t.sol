@@ -399,6 +399,57 @@ contract CommitteeReviewEvaluatorTest is Test {
         );
     }
 
+    function testConfigureJobRevertsWhenReviewIsAlreadyConfigured() external {
+        uint256 jobId = _createAndFundJob(7 days);
+        bytes32 deliverable = keccak256("deliverable:single-shot-config");
+
+        vm.prank(provider);
+        commerce.submit(jobId, deliverable);
+
+        committeeEvaluator.configureJob(
+            jobId, keccak256("attestation:single-shot-approved"), keccak256("attestation:single-shot-rejected"), 2, 2
+        );
+
+        vm.expectRevert(CommitteeReviewEvaluator.JobAlreadyConfigured.selector);
+        committeeEvaluator.configureJob(
+            jobId,
+            keccak256("attestation:single-shot-approved-2"),
+            keccak256("attestation:single-shot-rejected-2"),
+            2,
+            2
+        );
+    }
+
+    function testConfigureJobRevertsWhenVotesAlreadyExist() external {
+        uint256 jobId = _createAndFundJob(7 days);
+        bytes32 deliverable = keccak256("deliverable:no-vote-reset");
+        bytes32 successAttestation = keccak256("attestation:no-vote-reset-approved");
+        bytes32 failureAttestation = keccak256("attestation:no-vote-reset-rejected");
+
+        vm.prank(provider);
+        commerce.submit(jobId, deliverable);
+
+        committeeEvaluator.configureJob(jobId, successAttestation, failureAttestation, 2, 2);
+
+        address[] memory committee = committeeEvaluator.getCommittee(jobId);
+        vm.prank(committee[0]);
+        committeeEvaluator.castVote(jobId, CommitteeReviewEvaluator.VoteChoice.Approve);
+
+        vm.expectRevert(CommitteeReviewEvaluator.JobAlreadyConfigured.selector);
+        committeeEvaluator.configureJob(
+            jobId,
+            keccak256("attestation:no-vote-reset-approved-2"),
+            keccak256("attestation:no-vote-reset-rejected-2"),
+            2,
+            2
+        );
+
+        assertEq(
+            uint8(committeeEvaluator.votes(jobId, committee[0])), uint8(CommitteeReviewEvaluator.VoteChoice.Approve)
+        );
+        _assertValidatorAccount(committee[0], MINIMUM_STAKE, 0, 0, 1, true);
+    }
+
     function testConfigureJobRevertsAfterJobAlreadyTerminal() external {
         uint256 jobId = _createAndFundJob(7 days);
         bytes32 deliverable = keccak256("deliverable:terminal-config");

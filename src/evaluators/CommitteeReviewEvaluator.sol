@@ -141,6 +141,7 @@ contract CommitteeReviewEvaluator is IEvaluatorSettlementRecipient, Ownable, Ree
     error InsufficientStake();
     error PendingAccounting(uint256 pendingAccountings);
     error JobNotConfigured();
+    error JobAlreadyConfigured();
     error JobAlreadyResolved();
     error JobNotResolved();
     error JobAccountingAlreadyFinalized();
@@ -366,19 +367,10 @@ contract CommitteeReviewEvaluator is IEvaluatorSettlementRecipient, Ownable, Ree
         _validateCommitteeCapacity(committeeSize, job);
 
         JobConfig storage config = jobConfigs[jobId];
-        if (config.resolved) revert JobAlreadyResolved();
-
-        address[] storage votersForJob = jobVoters[jobId];
-        for (uint256 i = 0; i < votersForJob.length; ++i) {
-            address validatorAddress = votersForJob[i];
-            if (votes[jobId][validatorAddress] != VoteChoice.None) {
-                ValidatorAccount storage validator = validators[validatorAddress];
-                if (validator.pendingAccountings > 0) {
-                    validator.pendingAccountings -= 1;
-                }
-                delete votes[jobId][validatorAddress];
-            }
+        if (config.approvalThreshold != 0 || config.rejectionThreshold != 0) {
+            revert JobAlreadyConfigured();
         }
+        if (config.resolved) revert JobAlreadyResolved();
 
         config.successAttestation = successAttestation;
         config.failureAttestation = failureAttestation;
