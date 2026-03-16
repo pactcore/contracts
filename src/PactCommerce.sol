@@ -7,6 +7,7 @@ import {Ownable} from "openzeppelin-contracts/contracts/access/Ownable.sol";
 import {ReentrancyGuard} from "openzeppelin-contracts/contracts/utils/ReentrancyGuard.sol";
 
 import {IACPHook} from "./interfaces/IACPHook.sol";
+import {IEvaluatorSettlementRecipient} from "./interfaces/IEvaluatorSettlementRecipient.sol";
 import {IPactCommerce} from "./interfaces/IPactCommerce.sol";
 
 contract PactCommerce is IPactCommerce, Ownable, ReentrancyGuard {
@@ -14,8 +15,11 @@ contract PactCommerce is IPactCommerce, Ownable, ReentrancyGuard {
 
     uint256 public constant HOOK_GAS_LIMIT = 500_000;
     uint256 public constant DEFAULT_DISPUTE_BOND_AMOUNT = 100e6;
+    uint256 public constant DEFAULT_DISPUTE_DEADLINE_DURATION = 7 days;
     uint16 public constant BPS_DENOMINATOR = 10_000;
     uint16 public constant DEFAULT_UPHELD_DISPUTE_PENALTY_BPS = 1_000;
+    uint16 public constant DEFAULT_VALIDATOR_REWARD_BPS = 500;
+    uint16 public constant DEFAULT_ISSUER_REBATE_BPS = 500;
 
     bytes4 public constant SET_PROVIDER_SELECTOR = bytes4(keccak256("setProvider(uint256,address,bytes)"));
     bytes4 public constant SET_EVALUATOR_SELECTOR = bytes4(keccak256("setEvaluator(uint256,address,bytes)"));
@@ -30,6 +34,7 @@ contract PactCommerce is IPactCommerce, Ownable, ReentrancyGuard {
     uint16 public immutable platformFeeBps;
     uint16 public immutable upheldDisputePenaltyBps;
     uint256 public immutable disputeBondAmount;
+    uint256 public immutable disputeDeadlineDuration;
 
     uint256 private nextJobId = 1;
     uint256 private nextDisputeId = 1;
@@ -56,6 +61,16 @@ contract PactCommerce is IPactCommerce, Ownable, ReentrancyGuard {
     event JobRejected(uint256 indexed jobId, address indexed rejector, bytes32 reason);
     event JobExpired(uint256 indexed jobId);
     event PaymentReleased(uint256 indexed jobId, address indexed provider, uint256 amount, uint256 feeAmount);
+    event SettlementDistributed(
+        uint256 indexed jobId,
+        address indexed provider,
+        address indexed validatorRecipient,
+        address issuerRecipient,
+        uint256 providerAmount,
+        uint256 validatorAmount,
+        uint256 treasuryAmount,
+        uint256 issuerAmount
+    );
     event Refunded(uint256 indexed jobId, address indexed client, uint256 amount);
     event DisputeRaised(
         uint256 indexed disputeId,
@@ -70,6 +85,7 @@ contract PactCommerce is IPactCommerce, Ownable, ReentrancyGuard {
         uint256 indexed disputeId,
         uint256 indexed jobId,
         bool upheld,
+        Status finalStatus,
         bytes32 resolution,
         address resolver,
         address juryRecipient,
@@ -95,11 +111,13 @@ contract PactCommerce is IPactCommerce, Ownable, ReentrancyGuard {
     error DisputeNotFound();
     error DisputeAlreadyExists();
     error DisputeNotOpen();
+    error DisputeDeadlineNotReached();
     error InvalidDisputeBond();
+    error InvalidDisputeResolutionStatus();
 
     constructor(address paymentTokenAddress, address treasuryAddress, uint16 feeBps) Ownable(msg.sender) {
         if (paymentTokenAddress == address(0)) revert ZeroAddress();
-        if (feeBps > 10_000) revert InvalidFeeBps();
+        if (feeBps + DEFAULT_VALIDATOR_REWARD_BPS + DEFAULT_ISSUER_REBATE_BPS > 10_000) revert InvalidFeeBps();
         if (feeBps > 0 && treasuryAddress == address(0)) revert ZeroAddress();
 
         paymentToken = IERC20(paymentTokenAddress);
@@ -107,6 +125,7 @@ contract PactCommerce is IPactCommerce, Ownable, ReentrancyGuard {
         platformFeeBps = feeBps;
         upheldDisputePenaltyBps = DEFAULT_UPHELD_DISPUTE_PENALTY_BPS;
         disputeBondAmount = DEFAULT_DISPUTE_BOND_AMOUNT;
+        disputeDeadlineDuration = DEFAULT_DISPUTE_DEADLINE_DURATION;
     }
 
     function createJob(address provider, address evaluator, uint256 expiredAt, string calldata description)
@@ -281,16 +300,38 @@ contract PactCommerce is IPactCommerce, Ownable, ReentrancyGuard {
         job.status = Status.Completed;
         job.attestation = reason;
 
-        uint256 feeAmount = (job.budget * platformFeeBps) / 10_000;
-        uint256 providerAmount = job.budget - feeAmount;
+        (
+            address validatorRecipient,
+            uint256 providerAmount,
+            uint256 validatorAmount,
+            uint256 treasuryAmount,
+            uint256 issuerAmount
+        ) = _previewSettlement(job);
+        uint256 withheldAmount = validatorAmount + treasuryAmount + issuerAmount;
 
-        if (feeAmount > 0) {
-            paymentToken.safeTransfer(treasury, feeAmount);
+        if (treasuryAmount > 0) {
+            paymentToken.safeTransfer(treasury, treasuryAmount);
+        }
+        if (validatorAmount > 0) {
+            paymentToken.safeTransfer(validatorRecipient, validatorAmount);
+        }
+        if (issuerAmount > 0) {
+            paymentToken.safeTransfer(job.client, issuerAmount);
         }
         paymentToken.safeTransfer(job.provider, providerAmount);
 
         emit JobCompleted(jobId, msg.sender, reason);
-        emit PaymentReleased(jobId, job.provider, providerAmount, feeAmount);
+        emit PaymentReleased(jobId, job.provider, providerAmount, withheldAmount);
+        emit SettlementDistributed(
+            jobId,
+            job.provider,
+            validatorRecipient,
+            job.client,
+            providerAmount,
+            validatorAmount,
+            treasuryAmount,
+            issuerAmount
+        );
         _afterAction(job, jobId, COMPLETE_SELECTOR, hookData);
     }
 
@@ -353,6 +394,7 @@ contract PactCommerce is IPactCommerce, Ownable, ReentrancyGuard {
             subjectRef: subjectRef,
             evidenceHash: evidenceHash,
             bondAmount: expectedBondAmount,
+            openedAt: uint64(block.timestamp),
             status: DisputeStatus.Open,
             resolution: bytes32(0)
         });
@@ -363,7 +405,10 @@ contract PactCommerce is IPactCommerce, Ownable, ReentrancyGuard {
         emit DisputeRaised(disputeId, jobId, msg.sender, subjectType, subjectRef, evidenceHash, expectedBondAmount);
     }
 
-    function resolveDispute(uint256 disputeId, bool upheld, bytes32 resolution) external nonReentrant {
+    function resolveDispute(uint256 disputeId, bool upheld, Status finalStatus, bytes32 resolution)
+        external
+        nonReentrant
+    {
         if (msg.sender != owner()) revert UnauthorizedCaller();
 
         Dispute storage dispute = _getDispute(disputeId);
@@ -381,6 +426,10 @@ contract PactCommerce is IPactCommerce, Ownable, ReentrancyGuard {
         uint256 protocolAmount;
 
         if (upheld) {
+            if (finalStatus != Status.Completed && finalStatus != Status.Rejected && finalStatus != Status.Expired) {
+                revert InvalidDisputeResolutionStatus();
+            }
+
             uint256 penaltyAmount = (dispute.bondAmount * upheldDisputePenaltyBps) / BPS_DENOMINATOR;
             challengerRefundAmount = dispute.bondAmount - penaltyAmount;
             juryAmount = penaltyAmount / 2;
@@ -389,9 +438,13 @@ contract PactCommerce is IPactCommerce, Ownable, ReentrancyGuard {
             if (challengerRefundAmount > 0) {
                 paymentToken.safeTransfer(dispute.challenger, challengerRefundAmount);
             }
+
+            job.status = finalStatus;
+            job.attestation = resolution;
         } else {
             juryAmount = dispute.bondAmount / 2;
             protocolAmount = dispute.bondAmount - juryAmount;
+            finalStatus = job.status;
         }
 
         if (juryAmount > 0) {
@@ -405,6 +458,7 @@ contract PactCommerce is IPactCommerce, Ownable, ReentrancyGuard {
             disputeId,
             dispute.jobId,
             upheld,
+            finalStatus,
             resolution,
             msg.sender,
             juryRecipient,
@@ -413,7 +467,40 @@ contract PactCommerce is IPactCommerce, Ownable, ReentrancyGuard {
             juryAmount,
             protocolAmount
         );
-        job.attestation = resolution;
+    }
+
+    /// @notice Expire an open dispute, returning the bond to the challenger.
+    /// Treats the dispute as rejected (original decision upheld). Anyone may call this after the liveness deadline.
+    function expireDispute(uint256 disputeId, bytes32 resolution) external nonReentrant {
+        Dispute storage dispute = _getDispute(disputeId);
+        if (dispute.status != DisputeStatus.Open) revert DisputeNotOpen();
+        if (block.timestamp < uint256(dispute.openedAt) + disputeDeadlineDuration) {
+            revert DisputeDeadlineNotReached();
+        }
+
+        dispute.status = DisputeStatus.Rejected;
+        dispute.resolution = resolution;
+
+        // Return full bond to challenger on expiry (no penalty for liveness failure)
+        if (dispute.bondAmount > 0) {
+            paymentToken.safeTransfer(dispute.challenger, dispute.bondAmount);
+        }
+
+        Job storage job = _getJob(dispute.jobId);
+
+        emit DisputeResolved(
+            disputeId,
+            dispute.jobId,
+            false,
+            job.status,
+            resolution,
+            msg.sender,
+            address(0),
+            address(0),
+            dispute.bondAmount,
+            0,
+            0
+        );
     }
 
     function claimRefund(uint256 jobId) external nonReentrant {
@@ -451,11 +538,22 @@ contract PactCommerce is IPactCommerce, Ownable, ReentrancyGuard {
         return nextDisputeId;
     }
 
-    function previewPayout(uint256 jobId) external view returns (uint256 providerAmount, uint256 feeAmount) {
+    function previewPayout(uint256 jobId) external view returns (uint256 providerAmount, uint256 withheldAmount) {
         Job storage job = _getJob(jobId);
+        uint256 validatorAmount;
+        uint256 treasuryAmount;
+        uint256 issuerAmount;
+        (, providerAmount, validatorAmount, treasuryAmount, issuerAmount) = _previewSettlement(job);
+        withheldAmount = validatorAmount + treasuryAmount + issuerAmount;
+    }
 
-        feeAmount = (job.budget * platformFeeBps) / 10_000;
-        providerAmount = job.budget - feeAmount;
+    function previewSettlement(uint256 jobId)
+        external
+        view
+        returns (uint256 providerAmount, uint256 validatorAmount, uint256 treasuryAmount, uint256 issuerAmount)
+    {
+        Job storage job = _getJob(jobId);
+        (, providerAmount, validatorAmount, treasuryAmount, issuerAmount) = _previewSettlement(job);
     }
 
     function _beforeAction(Job storage job, uint256 jobId, bytes4 selector, bytes memory data) internal {
@@ -480,6 +578,38 @@ contract PactCommerce is IPactCommerce, Ownable, ReentrancyGuard {
 
         assembly {
             revert(add(returnData, 0x20), mload(returnData))
+        }
+    }
+
+    function _previewSettlement(Job storage job)
+        internal
+        view
+        returns (
+            address validatorRecipient,
+            uint256 providerAmount,
+            uint256 validatorAmount,
+            uint256 treasuryAmount,
+            uint256 issuerAmount
+        )
+    {
+        validatorRecipient = _resolveValidatorRecipient(job.evaluator);
+        validatorAmount = (job.budget * DEFAULT_VALIDATOR_REWARD_BPS) / BPS_DENOMINATOR;
+        treasuryAmount = (job.budget * platformFeeBps) / BPS_DENOMINATOR;
+        issuerAmount = (job.budget * DEFAULT_ISSUER_REBATE_BPS) / BPS_DENOMINATOR;
+        providerAmount = job.budget - validatorAmount - treasuryAmount - issuerAmount;
+    }
+
+    function _resolveValidatorRecipient(address evaluator) internal view returns (address recipient) {
+        recipient = evaluator;
+        if (evaluator.code.length == 0) return recipient;
+
+        (bool success, bytes memory returnData) =
+            evaluator.staticcall(abi.encodeCall(IEvaluatorSettlementRecipient.settlementRecipient, ()));
+        if (!success || returnData.length < 32) return recipient;
+
+        address configuredRecipient = abi.decode(returnData, (address));
+        if (configuredRecipient != address(0)) {
+            recipient = configuredRecipient;
         }
     }
 

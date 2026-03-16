@@ -35,20 +35,20 @@ File: `src/PactCommerce.sol`
 Purpose:
 - Implements the ERC-8183 job lifecycle: `Open -> Funded -> Submitted -> Terminal`.
 - Escrows a single ERC-20 payment token per contract and settles deterministically.
-- Supports optional platform fee payout to a treasury on completion only.
-- Adds a dispute bond lane for terminal jobs so jury/governance review can be modeled without reopening escrow state, including challenger slashing splits for upheld vs. rejected disputes.
+- Settles completions with the legacy PACT economics split: provider / validator / treasury / issuer = 85 / 5 / 5 / 5 by default when treasury fee is configured to 5%.
+- Adds a dispute bond lane for terminal jobs so jury/governance review can be modeled without reopening escrow state, including challenger slashing splits for upheld vs. rejected disputes, explicit terminal-status overrides for upheld appeals, and a deadline before unresolved disputes can expire back to the challenger.
 - Stores onchain job records: description, deliverable reference, evaluator attestation, and terminal status.
 - Allows evaluator assignment or replacement while a job remains `Open`, including jobs created without an evaluator.
 - Exposes the standard hook surface around `setProvider`, `setEvaluator`, `setBudget`, `fund`, `submit`, `complete`, and `reject`.
 - Bounds external hook execution with `HOOK_GAS_LIMIT` so policy hooks cannot consume unbounded gas.
-- Exposes `previewPayout(jobId)` so clients and frontends can quote provider/treasury settlement before completion.
+- Exposes `previewPayout(jobId)` and `previewSettlement(jobId)` so clients and frontends can quote aggregate withheld value plus the full provider / validator / treasury / issuer breakdown before completion.
 
 Roles:
 - `client`: creates the job, can set provider, negotiate budget, fund escrow, and reject while still `Open`.
 - `provider`: sets or negotiates budget and submits the deliverable reference.
-- `evaluator`: a single address that may reject while `Funded`, and complete or reject while `Submitted`.
+- `evaluator`: a single address that may reject while `Funded`, and complete or reject while `Submitted`; if it implements `settlementRecipient()`, the validator share routes there instead of to the evaluator address itself.
 - `challenger`: posts the fixed dispute bond to escalate a terminal job into jury / governance review.
-- `owner`: resolves disputes and routes the bond into challenger refund plus jury/protocol allocations instead of reopening escrow settlement.
+- `owner`: resolves disputes and routes the bond into challenger refund plus jury/protocol allocations while explicitly setting the final terminal job status for upheld appeals instead of reopening escrow settlement.
 
 Core lifecycle:
 1. `createJob(provider, evaluator, expiredAt, description, hook)`
@@ -59,8 +59,9 @@ Core lifecycle:
 6. `submit(jobId, deliverable, optParams)`
 7. `complete(jobId, reason, optParams)` or `reject(jobId, reason, optParams)`
 8. `raiseDispute(jobId, subjectType, subjectRef, evidenceHash, expectedBondAmount)` for terminal-state jury escalation
-9. `resolveDispute(disputeId, upheld, resolution)` by the contract owner / governance authority, applying the dispute-bond slashing split in-place
-10. `claimRefund(jobId)` after expiry from `Funded` or `Submitted`
+9. `resolveDispute(disputeId, upheld, finalStatus, resolution)` by the contract owner / governance authority, applying the dispute-bond slashing split in-place and updating the final terminal job status for upheld appeals
+10. `expireDispute(disputeId, resolution)` after the dispute liveness deadline to return the full bond to the challenger when review stalls
+11. `claimRefund(jobId)` after expiry from `Funded` or `Submitted`
 
 Events:
 - `JobCreated`
@@ -73,6 +74,7 @@ Events:
 - `JobRejected`
 - `JobExpired`
 - `PaymentReleased`
+- `SettlementDistributed`
 - `Refunded`
 - `DisputeRaised`
 - `DisputeResolved`
@@ -111,8 +113,38 @@ Purpose:
 - Completes or rejects the job based on a configured deterministic expectation.
 - Can additionally bind evaluation to the hash of opaque evaluator `optParams`, so receipt bundles or proof payloads are checked before settlement while still being forwarded into `PactCommerce` hooks.
 - Consumes expectations after evaluation so proof configurations are one-shot by default.
+- Implements `settlementRecipient()` so the validator share routes to the evaluator owner instead of remaining trapped on the evaluator contract.
 
 This is the PACT path for zk-proof verifiers, receipts, or other deterministic validation contracts. Human judges, multisigs, and DAOs fit the same surface by simply being the `evaluator` address on a job.
+
+### Committee Evaluator
+File: `src/evaluators/CommitteeReviewEvaluator.sol`
+
+Purpose:
+- Adds an ERC-8183-compatible evaluator contract for Layer-2 agent-validator review instead of a single judge address.
+- Pseudo-randomly samples a per-job validator committee from the active staker set with owner-managed 1-100 reputation weights, excludes the job's client/provider/evaluator from that draw, filters out validators whose current stake cannot cover the job's slashable validator-reward requirement, defaults unset validators to the legacy max score, exposes the selected panel onchain, and rejects votes from non-selected validators.
+- Requires `configureJob(...)` to happen only after the provider has submitted evidence, and only once per job, so the validator review window cannot start early or be reset later to reseed the committee / deadline.
+- Lets selected validators stake the settlement token, cast `Approve` / `Reject` / `Uncertain` votes, and resolve a submitted job once an approval or rejection threshold is met.
+- Routes the validator settlement share into the evaluator contract, rejects votes when a validator's stake cannot economically cover the job's validator reward share, and only finalizes validator rewards after either the committee dispute window expires or a terminal `raiseDispute(...)` challenge is resolved; appeals that end in an `Expired` final job state now withhold validator rewards without counting the unresolved review as a validator deviation.
+- Tracks consecutive deviations from the final committee-or-jury outcome and slashes validator stake after a configurable number of disagreements, so jury/governance review can override committee-majority accounting instead of merely annotating it.
+- Locks validator unstaking while they still have unresolved committee jobs, preserving slashable stake until the whitepaper-style appeal lane finishes.
+- Can optionally bind votes to the hash of opaque evaluator `optParams`, so receipt bundles or evidence payloads stay hash-checked all the way into settlement.
+
+This is the PACT path for multi-agent validator committees: a job still exposes a single ERC-8183 `evaluator` address, but that address can now encapsulate quorum voting, reward routing, dispute-aware accounting, and slashing semantics internally.
+
+### Human Jury
+File: `src/HumanJury.sol`
+
+Purpose:
+- Turns terminal-state `raiseDispute(...)` appeals into a concrete Layer-3 jury contract instead of leaving review as a bare `owner()` action.
+- Maintains a registry of high-reputation jurors, pseudo-randomly selects an odd-sized 5-11 member panel per dispute while excluding the job's client/provider/evaluator and the active challenger, and tracks per-dispute `Uphold` / `Reject` votes.
+- Calls `resolveDispute(...)` once the panel reaches a majority and, when `PactCommerce` ownership is delegated to the jury contract, becomes the onchain jury recipient for dispute-bond payouts.
+- Anchors each jury deadline to the dispute's original `openedAt` timestamp and requires the jury deadline configuration to match `PactCommerce`'s dispute-expiry window, so late-created panels cannot outlive or be bypassed by the commerce-layer expiry path.
+- Routes stalled review expiry through `expireDispute(...)`, preserving the original terminal job state while refunding the challenger's full bond when jury liveness fails.
+- Splits the jury share of the dispute bond across aligned jurors as claimable rewards, so the whitepaper's human-jury lane has explicit economic routing instead of an implied treasury sink.
+- Keeps low-reputation or inactive jurors out of new panels while still exposing the selected panel for offchain transparency and auditability.
+
+This closes the biggest remaining gap in the three-layer verification path: committee outcomes can now bridge into an actual jury contract before governance-level policy orchestration.
 
 ### Governance Evaluator
 Files:
@@ -128,6 +160,7 @@ Purpose:
 - After the proposal clears voting and timelock, governance executes the evaluator call, which then completes or rejects the job from the evaluator address.
 - The same proposal flow can finalize dispute review on terminal jobs without reopening escrow settlement.
 - Preserves opaque evaluator `optParams` all the way through to `PactCommerce` hooks, so governance decisions can carry proposal URIs, evidence bundles, or offchain deliberation metadata.
+- Implements `settlementRecipient()` so the validator share routes to the governance contract rather than staying on the evaluator shim.
 
 This gives PACT a tested human/DAO review flow without changing the underlying ERC-8183 job permissions: `PactCommerce` still only accepts settlement from the configured evaluator address.
 
@@ -149,10 +182,14 @@ The rest of the repository remains unchanged:
 - governance-authored dispute resolution after commerce ownership is delegated to the DAO, including jury/protocol bond splits
 - client rejection from `Open`
 - expiry reclaim
-- payout previewing for frontends and settlement UX
+- payout previewing for frontends and settlement UX, including the 85 / 5 / 5 / 5 provider / validator / treasury / issuer split
 - hook enforcement, callback recording, provider-score verification telemetry, evaluator allowlist enforcement, and combined counterparty policy enforcement
 - rollback when an `afterAction` policy hook rejects settlement
 - deterministic evaluator completion and rejection paths, including forwarded opaque evaluation params, hash-bound proof bundle checks, and one-shot expectation consumption
+
+`test/CommitteeReviewEvaluator.t.sol` covers committee approval and rejection flows, reputation-weighted sampled-committee membership enforcement, stake-coverage-aware committee capacity checks, dispute-window gating, jury/dispute overrides of validator accounting, expired-appeal no-fault accounting, reward splitting across aligned validators, opt-params hash binding, and slashing after three consecutive deviations.
+
+`test/HumanJury.t.sol` covers high-reputation jury-panel selection, low-reputation juror exclusion, upheld-vs-rejected dispute outcomes, jury reward distribution, and the bridge from committee review into final jury accounting.
 
 `test/PactGovernance.t.sol` also covers governance-authored ERC-8183 decision and dispute proposals and verifies the encoded call target/data for both helper paths.
 
