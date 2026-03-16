@@ -615,6 +615,68 @@ contract HumanJuryTest is Test {
         assertTrue(_contains(secondPanel, jurorF));
     }
 
+    function testJurySelectionSnapshotsFreezeDrawMetrics() external {
+        uint256 jobId = _createAndFundDirectReviewJob(7 days);
+        uint256 disputeBond = commerce.disputeBondAmount();
+
+        vm.prank(provider);
+        commerce.submit(jobId, keccak256("deliverable:jury-selection-snapshot"));
+
+        vm.prank(evaluator);
+        commerce.complete(jobId, keccak256("attestation:jury-selection-snapshot"));
+
+        vm.prank(challenger);
+        uint256 disputeId = commerce.raiseDispute(
+            jobId,
+            keccak256("human-review"),
+            keccak256("completion://jury-selection-snapshot"),
+            keccak256("evidence://jury-selection-snapshot"),
+            disputeBond
+        );
+
+        commerce.transferOwnership(address(humanJury));
+
+        humanJury.createReview(
+            disputeId,
+            IPactCommerce.Status.Rejected,
+            keccak256("unused-upheld-resolution"),
+            keccak256("rejected-resolution-jury-selection-snapshot")
+        );
+
+        address selectedJuror = humanJury.getPanel(disputeId)[0];
+        uint16 selectedJurorReputation = humanJury.jurorReputation(selectedJuror);
+
+        {
+            (uint16 reputation, uint16 responseScore, uint16 loadScore, uint256 weight, uint32 pendingPanels) =
+                humanJury.getSelectionSnapshot(disputeId, selectedJuror);
+
+            assertEq(reputation, selectedJurorReputation);
+            assertEq(responseScore, 100);
+            assertEq(loadScore, 100);
+            assertEq(weight, uint256(reputation) * 10_000);
+            assertEq(pendingPanels, 0);
+        }
+
+        assertEq(humanJury.jurorAssignments(selectedJuror), 1);
+        assertEq(humanJury.jurorResponseScore(selectedJuror), 75);
+        assertEq(humanJury.jurorLoadScore(selectedJuror), 50);
+
+        {
+            (
+                ,
+                uint16 responseScoreAfterSelection,
+                uint16 loadScoreAfterSelection,
+                uint256 weightAfterSelection,
+                uint32 pendingPanelsAfterSelection
+            ) = humanJury.getSelectionSnapshot(disputeId, selectedJuror);
+
+            assertEq(responseScoreAfterSelection, 100);
+            assertEq(loadScoreAfterSelection, 100);
+            assertEq(weightAfterSelection, uint256(selectedJurorReputation) * 10_000);
+            assertEq(pendingPanelsAfterSelection, 0);
+        }
+    }
+
     function testCannotExpireAlreadyResolvedReview() external {
         uint256 jobId = _createAndFundDirectReviewJob(7 days);
         bytes32 deliverable = keccak256("deliverable:resolved-then-expire");

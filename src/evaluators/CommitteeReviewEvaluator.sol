@@ -61,6 +61,15 @@ contract CommitteeReviewEvaluator is IEvaluatorSettlementRecipient, Ownable, Ree
         bool accountingFinalized;
     }
 
+    struct SelectionSnapshot {
+        uint16 reputation;
+        uint16 responseScore;
+        uint16 appealScore;
+        uint256 weight;
+        uint256 stake;
+        uint256 requiredStake;
+    }
+
     uint16 public constant MAX_VALIDATOR_REPUTATION = 100;
     uint256 private constant REPUTATION_PRIOR_WEIGHT = 4;
     uint256 private constant RESPONSE_PRIOR_WEIGHT = 3;
@@ -88,6 +97,8 @@ contract CommitteeReviewEvaluator is IEvaluatorSettlementRecipient, Ownable, Ree
     mapping(uint256 jobId => VoteTally) public tallies;
     mapping(uint256 jobId => mapping(address validator => VoteChoice choice)) public votes;
     mapping(uint256 jobId => mapping(address validator => bool selected)) public committeeMembers;
+    mapping(uint256 jobId => mapping(address validator => SelectionSnapshot snapshot)) private
+        committeeSelectionSnapshots;
     mapping(uint256 jobId => address[]) private jobCommittee;
     mapping(uint256 jobId => address[]) private jobVoters;
 
@@ -120,6 +131,16 @@ contract CommitteeReviewEvaluator is IEvaluatorSettlementRecipient, Ownable, Ree
         bytes32 expectedOptParamsHash
     );
     event CommitteeSelected(uint256 indexed jobId, bytes32 indexed selectionSeed, uint32 committeeSize);
+    event CommitteeMemberSelected(
+        uint256 indexed jobId,
+        address indexed validator,
+        uint16 reputation,
+        uint16 responseScore,
+        uint16 appealScore,
+        uint256 weight,
+        uint256 stake,
+        uint256 requiredStake
+    );
     event VoteCast(
         uint256 indexed jobId,
         address indexed validator,
@@ -353,13 +374,18 @@ contract CommitteeReviewEvaluator is IEvaluatorSettlementRecipient, Ownable, Ree
     }
 
     function validatorSelectionWeight(address validator) public view returns (uint256) {
-        uint256 selectionWeight = uint256(validatorReputation(validator)) * uint256(validatorResponseScore(validator))
-            * uint256(validatorAppealScore(validator)) / MAX_VALIDATOR_REPUTATION;
-        if (selectionWeight == 0) {
-            return 1;
-        }
+        return _selectionSnapshot(validator).weight;
+    }
 
-        return selectionWeight;
+    function _selectionSnapshot(address validator) internal view returns (SelectionSnapshot memory snapshot) {
+        snapshot.reputation = validatorReputation(validator);
+        snapshot.responseScore = validatorResponseScore(validator);
+        snapshot.appealScore = validatorAppealScore(validator);
+        snapshot.weight = uint256(snapshot.reputation) * uint256(snapshot.responseScore) * uint256(snapshot.appealScore)
+            / MAX_VALIDATOR_REPUTATION;
+        if (snapshot.weight == 0) {
+            snapshot.weight = 1;
+        }
     }
 
     function castVote(uint256 jobId, VoteChoice choice) external {
@@ -408,6 +434,29 @@ contract CommitteeReviewEvaluator is IEvaluatorSettlementRecipient, Ownable, Ree
 
     function getCommittee(uint256 jobId) external view returns (address[] memory) {
         return jobCommittee[jobId];
+    }
+
+    function getCommitteeSelectionSnapshot(uint256 jobId, address validator)
+        external
+        view
+        returns (
+            uint16 reputation,
+            uint16 responseScore,
+            uint16 appealScore,
+            uint256 weight,
+            uint256 stake,
+            uint256 requiredStake
+        )
+    {
+        SelectionSnapshot memory snapshot = committeeSelectionSnapshots[jobId][validator];
+        return (
+            snapshot.reputation,
+            snapshot.responseScore,
+            snapshot.appealScore,
+            snapshot.weight,
+            snapshot.stake,
+            snapshot.requiredStake
+        );
     }
 
     function getVoters(uint256 jobId) external view returns (address[] memory) {
@@ -472,7 +521,9 @@ contract CommitteeReviewEvaluator is IEvaluatorSettlementRecipient, Ownable, Ree
 
         address[] storage committeeForJob = jobCommittee[jobId];
         for (uint256 i = 0; i < committeeForJob.length; ++i) {
-            delete committeeMembers[jobId][committeeForJob[i]];
+            address validatorAddress = committeeForJob[i];
+            delete committeeMembers[jobId][validatorAddress];
+            delete committeeSelectionSnapshots[jobId][validatorAddress];
         }
         delete jobCommittee[jobId];
 
@@ -770,8 +821,24 @@ contract CommitteeReviewEvaluator is IEvaluatorSettlementRecipient, Ownable, Ree
             jobCommittee[jobId].push(validatorAddress);
             validatorAssignments[validatorAddress] += 1;
 
+            SelectionSnapshot memory snapshot = _selectionSnapshot(validatorAddress);
+            snapshot.stake = validators[validatorAddress].stake;
+            snapshot.requiredStake = requiredStake;
+            committeeSelectionSnapshots[jobId][validatorAddress] = snapshot;
+
             // Reserve the selected validator's slashable stake for this review before any vote is cast.
             validators[validatorAddress].pendingAccountings += 1;
+
+            emit CommitteeMemberSelected(
+                jobId,
+                validatorAddress,
+                snapshot.reputation,
+                snapshot.responseScore,
+                snapshot.appealScore,
+                snapshot.weight,
+                snapshot.stake,
+                snapshot.requiredStake
+            );
         }
 
         emit CommitteeSelected(jobId, selectionSeed, committeeSize);

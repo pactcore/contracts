@@ -47,6 +47,14 @@ contract HumanJury is Ownable, ReentrancyGuard {
         uint8 rejectCount;
     }
 
+    struct SelectionSnapshot {
+        uint16 reputation;
+        uint16 responseScore;
+        uint16 loadScore;
+        uint256 weight;
+        uint32 pendingPanels;
+    }
+
     IPactCommerce public immutable commerce;
     IERC20 public immutable settlementToken;
     uint16 public constant MAX_JUROR_REPUTATION = 100;
@@ -70,6 +78,7 @@ contract HumanJury is Ownable, ReentrancyGuard {
     mapping(address juror => bool knownJuror) private isKnownJuror;
     mapping(uint256 disputeId => address[]) private reviewPanels;
     mapping(uint256 disputeId => mapping(address juror => bool selected)) private isSelectedJuror;
+    mapping(uint256 disputeId => mapping(address juror => SelectionSnapshot snapshot)) private reviewSelectionSnapshots;
 
     event JurorConfigured(address indexed juror, uint16 reputation, bool active, uint32 pendingPanels);
     event JurorPerformanceUpdated(
@@ -98,6 +107,15 @@ contract HumanJury is Ownable, ReentrancyGuard {
         uint64 deadlineAt,
         uint8 panelSize,
         uint8 majorityThreshold
+    );
+    event JurorSelected(
+        uint256 indexed disputeId,
+        address indexed juror,
+        uint16 reputation,
+        uint16 responseScore,
+        uint16 loadScore,
+        uint256 weight,
+        uint32 pendingPanels
     );
     event ReviewResolved(
         uint256 indexed disputeId,
@@ -220,11 +238,18 @@ contract HumanJury is Ownable, ReentrancyGuard {
     }
 
     function jurorSelectionWeight(address juror) public view returns (uint256) {
-        uint256 reputationScore = jurorReputation(juror);
-        if (reputationScore == 0) {
-            reputationScore = 1;
+        return _selectionSnapshot(juror).weight;
+    }
+
+    function _selectionSnapshot(address juror) internal view returns (SelectionSnapshot memory snapshot) {
+        snapshot.reputation = jurorReputation(juror);
+        if (snapshot.reputation == 0) {
+            snapshot.reputation = 1;
         }
-        return reputationScore * uint256(jurorResponseScore(juror)) * uint256(jurorLoadScore(juror));
+        snapshot.responseScore = jurorResponseScore(juror);
+        snapshot.loadScore = jurorLoadScore(juror);
+        snapshot.weight = uint256(snapshot.reputation) * uint256(snapshot.responseScore) * uint256(snapshot.loadScore);
+        snapshot.pendingPanels = jurors[juror].pendingPanels;
     }
 
     /// @notice Create a jury review panel for an open dispute.
@@ -272,8 +297,22 @@ contract HumanJury is Ownable, ReentrancyGuard {
             address juror = selectedJurors[i];
             reviewPanels[disputeId].push(juror);
             isSelectedJuror[disputeId][juror] = true;
+
+            SelectionSnapshot memory snapshot = _selectionSnapshot(juror);
+            reviewSelectionSnapshots[disputeId][juror] = snapshot;
+
             jurors[juror].pendingPanels += 1;
             jurorAssignments[juror] += 1;
+
+            emit JurorSelected(
+                disputeId,
+                juror,
+                snapshot.reputation,
+                snapshot.responseScore,
+                snapshot.loadScore,
+                snapshot.weight,
+                snapshot.pendingPanels
+            );
         }
 
         emit ReviewCreated(
@@ -365,6 +404,16 @@ contract HumanJury is Ownable, ReentrancyGuard {
 
     function getPanel(uint256 disputeId) external view returns (address[] memory) {
         return reviewPanels[disputeId];
+    }
+
+    function getSelectionSnapshot(uint256 disputeId, address juror)
+        external
+        view
+        returns (uint16 reputation, uint16 responseScore, uint16 loadScore, uint256 weight, uint32 pendingPanels)
+    {
+        SelectionSnapshot memory snapshot = reviewSelectionSnapshots[disputeId][juror];
+        return
+            (snapshot.reputation, snapshot.responseScore, snapshot.loadScore, snapshot.weight, snapshot.pendingPanels);
     }
 
     function _resolveReview(uint256 disputeId, bool upheld) internal {

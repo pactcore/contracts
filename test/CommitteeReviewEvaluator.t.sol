@@ -926,6 +926,61 @@ contract CommitteeReviewEvaluatorTest is Test {
         );
     }
 
+    function testCommitteeSelectionSnapshotsFreezeDrawMetrics() external {
+        uint256 jobId = _createAndFundJob(7 days);
+
+        vm.prank(provider);
+        commerce.submit(jobId, keccak256("deliverable:selection-snapshot"));
+
+        committeeEvaluator.configureJob(
+            jobId,
+            keccak256("attestation:selection-snapshot-approved"),
+            keccak256("attestation:selection-snapshot-rejected"),
+            2,
+            1
+        );
+
+        address selectedValidator = committeeEvaluator.getCommittee(jobId)[0];
+
+        {
+            (
+                uint16 reputation,
+                uint16 responseScore,
+                uint16 appealScore,
+                uint256 weight,
+                uint256 stake,
+                uint256 requiredStake
+            ) = committeeEvaluator.getCommitteeSelectionSnapshot(jobId, selectedValidator);
+
+            assertEq(reputation, 100);
+            assertEq(responseScore, 75);
+            assertEq(appealScore, 100);
+            assertEq(weight, 7_500);
+            assertEq(stake, MINIMUM_STAKE);
+            assertEq(requiredStake, committeeEvaluator.minimumRequiredStakeForJob(jobId));
+        }
+
+        vm.prank(selectedValidator);
+        committeeEvaluator.castVote(jobId, CommitteeReviewEvaluator.VoteChoice.Approve);
+
+        assertEq(committeeEvaluator.validatorResponseScore(selectedValidator), 100);
+
+        {
+            (
+                ,
+                uint16 responseScoreAfterVote,,
+                uint256 weightAfterVote,
+                uint256 stakeAfterVote,
+                uint256 requiredStakeAfterVote
+            ) = committeeEvaluator.getCommitteeSelectionSnapshot(jobId, selectedValidator);
+
+            assertEq(responseScoreAfterVote, 75);
+            assertEq(weightAfterVote, 7_500);
+            assertEq(stakeAfterVote, MINIMUM_STAKE);
+            assertEq(requiredStakeAfterVote, committeeEvaluator.minimumRequiredStakeForJob(jobId));
+        }
+    }
+
     function testWeightedCommitteeSelectionPenalizesRepeatedNoShows() external {
         CommitteeReviewEvaluator responsiveEvaluator = new CommitteeReviewEvaluator(
             address(commerce),
