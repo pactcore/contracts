@@ -63,6 +63,7 @@ contract CommitteeReviewEvaluator is IEvaluatorSettlementRecipient, Ownable, Ree
 
     uint16 public constant MAX_VALIDATOR_REPUTATION = 100;
     uint256 private constant REPUTATION_PRIOR_WEIGHT = 4;
+    uint256 private constant RESPONSE_PRIOR_WEIGHT = 3;
 
     IPactCommerce public immutable commerce;
     IERC20 public immutable settlementToken;
@@ -77,6 +78,8 @@ contract CommitteeReviewEvaluator is IEvaluatorSettlementRecipient, Ownable, Ree
     mapping(address validator => ValidatorPerformance performance) public validatorPerformances;
     mapping(address validator => uint16 reputation) private validatorReputations;
     mapping(address validator => bool initialized) private validatorReputationInitialized;
+    mapping(address validator => uint32 assignments) public validatorAssignments;
+    mapping(address validator => uint32 responses) public validatorResponses;
     mapping(uint256 jobId => JobConfig) public jobConfigs;
     mapping(uint256 jobId => JobResolution) public jobResolutions;
     mapping(uint256 jobId => VoteTally) public tallies;
@@ -312,6 +315,27 @@ contract CommitteeReviewEvaluator is IEvaluatorSettlementRecipient, Ownable, Ree
         );
     }
 
+    function validatorResponseScore(address validator) public view returns (uint16) {
+        uint256 assignments = validatorAssignments[validator];
+        if (assignments == 0) {
+            return MAX_VALIDATOR_REPUTATION;
+        }
+
+        uint256 derivedResponseScore =
+            (uint256(MAX_VALIDATOR_REPUTATION) * (uint256(validatorResponses[validator]) + RESPONSE_PRIOR_WEIGHT))
+                / (assignments + RESPONSE_PRIOR_WEIGHT);
+        if (derivedResponseScore == 0) {
+            return 1;
+        }
+
+        // forge-lint: disable-next-line(unsafe-typecast)
+        return uint16(derivedResponseScore);
+    }
+
+    function validatorSelectionWeight(address validator) public view returns (uint256) {
+        return uint256(validatorReputation(validator)) * uint256(validatorResponseScore(validator));
+    }
+
     function castVote(uint256 jobId, VoteChoice choice) external {
         _castVote(jobId, choice, "");
     }
@@ -471,6 +495,7 @@ contract CommitteeReviewEvaluator is IEvaluatorSettlementRecipient, Ownable, Ree
         }
 
         votes[jobId][msg.sender] = choice;
+        validatorResponses[msg.sender] += 1;
         jobVoters[jobId].push(msg.sender);
 
         VoteTally storage tally = tallies[jobId];
@@ -712,6 +737,7 @@ contract CommitteeReviewEvaluator is IEvaluatorSettlementRecipient, Ownable, Ree
             address validatorAddress = candidates[i];
             committeeMembers[jobId][validatorAddress] = true;
             jobCommittee[jobId].push(validatorAddress);
+            validatorAssignments[validatorAddress] += 1;
 
             // Reserve the selected validator's slashable stake for this review before any vote is cast.
             validators[validatorAddress].pendingAccountings += 1;
@@ -779,7 +805,7 @@ contract CommitteeReviewEvaluator is IEvaluatorSettlementRecipient, Ownable, Ree
     }
 
     function _selectionWeight(address validator) internal view returns (uint256) {
-        return validatorReputation(validator);
+        return validatorSelectionWeight(validator);
     }
 
     function _syncActiveValidatorSet(address validator, bool wasActive, bool isActive) internal {

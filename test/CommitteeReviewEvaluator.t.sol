@@ -821,13 +821,147 @@ contract CommitteeReviewEvaluatorTest is Test {
         candidates[2] = validatorC;
         candidates[3] = validatorD;
 
-        uint16[] memory reputations = new uint16[](4);
-        reputations[0] = 100;
-        reputations[1] = 80;
-        reputations[2] = 20;
-        reputations[3] = 5;
+        uint16[] memory selectionWeights = new uint16[](4);
+        selectionWeights[0] = 10_000;
+        selectionWeights[1] = 8_000;
+        selectionWeights[2] = 2_000;
+        selectionWeights[3] = 500;
 
-        address[] memory expectedCommittee = _expectedWeightedCommittee(candidates, reputations, selectionSeed, 2);
+        address[] memory expectedCommittee = _expectedWeightedCommittee(candidates, selectionWeights, selectionSeed, 2);
+        assertEq(committee[0], expectedCommittee[0]);
+        assertEq(committee[1], expectedCommittee[1]);
+    }
+
+    function testValidatorResponseScoreDefaultsToMaximumAndPenalizesNoShows() external {
+        assertEq(committeeEvaluator.validatorResponseScore(validatorA), 100);
+        assertEq(committeeEvaluator.validatorSelectionWeight(validatorA), 10_000);
+
+        uint256 jobId = _createAndFundJob(7 days);
+        bytes32 deliverable = keccak256("deliverable:no-show-response-score");
+        bytes32 successAttestation = keccak256("attestation:no-show-response-approved");
+        bytes32 failureAttestation = keccak256("attestation:no-show-response-rejected");
+
+        vm.prank(provider);
+        commerce.submit(jobId, deliverable);
+
+        committeeEvaluator.configureJob(jobId, successAttestation, failureAttestation, 2, 2);
+
+        vm.prank(validatorA);
+        committeeEvaluator.castVote(jobId, CommitteeReviewEvaluator.VoteChoice.Approve);
+
+        vm.prank(validatorB);
+        committeeEvaluator.castVote(jobId, CommitteeReviewEvaluator.VoteChoice.Approve);
+
+        vm.warp(block.timestamp + DISPUTE_WINDOW + 1);
+        committeeEvaluator.finalizeJobAccounting(jobId);
+
+        assertEq(committeeEvaluator.validatorAssignments(validatorA), 1);
+        assertEq(committeeEvaluator.validatorResponses(validatorA), 1);
+        assertEq(committeeEvaluator.validatorAssignments(validatorC), 1);
+        assertEq(committeeEvaluator.validatorResponses(validatorC), 0);
+
+        assertEq(committeeEvaluator.validatorResponseScore(validatorA), 100);
+        assertEq(committeeEvaluator.validatorResponseScore(validatorC), 75);
+        assertLt(committeeEvaluator.validatorSelectionWeight(validatorC), committeeEvaluator.validatorSelectionWeight(validatorA));
+    }
+
+    function testWeightedCommitteeSelectionPenalizesRepeatedNoShows() external {
+        CommitteeReviewEvaluator responsiveEvaluator = new CommitteeReviewEvaluator(
+            address(commerce),
+            address(usdc),
+            MINIMUM_STAKE,
+            DISPUTE_WINDOW,
+            REVIEW_DEADLINE,
+            SLASHING_BPS,
+            SLASH_AFTER_DISAGREEMENTS,
+            treasury
+        );
+
+        usdc.mint(validatorD, VALIDATOR_BANKROLL);
+        _approveAndStake(address(responsiveEvaluator), validatorA, MINIMUM_STAKE);
+        _approveAndStake(address(responsiveEvaluator), validatorB, MINIMUM_STAKE);
+        _approveAndStake(address(responsiveEvaluator), validatorD, MINIMUM_STAKE);
+
+        for (uint256 i = 0; i < 3; ++i) {
+            vm.prank(client);
+            uint256 trainingJobId = commerce.createJob(
+                provider, address(responsiveEvaluator), block.timestamp + 7 days, "response-training committee job"
+            );
+
+            vm.prank(client);
+            commerce.setBudget(trainingJobId, BUDGET);
+
+            vm.prank(client);
+            commerce.fund(trainingJobId, BUDGET);
+
+            vm.prank(provider);
+            commerce.submit(trainingJobId, keccak256(abi.encodePacked("deliverable:response-training", i)));
+
+            responsiveEvaluator.configureJob(
+                trainingJobId,
+                keccak256(abi.encodePacked("attestation:response-training-approved", i)),
+                keccak256(abi.encodePacked("attestation:response-training-rejected", i)),
+                2,
+                2
+            );
+
+            vm.prank(validatorA);
+            responsiveEvaluator.castVote(trainingJobId, CommitteeReviewEvaluator.VoteChoice.Approve);
+
+            vm.prank(validatorB);
+            responsiveEvaluator.castVote(trainingJobId, CommitteeReviewEvaluator.VoteChoice.Approve);
+
+            vm.warp(block.timestamp + DISPUTE_WINDOW + 1);
+            responsiveEvaluator.finalizeJobAccounting(trainingJobId);
+        }
+
+        assertEq(responsiveEvaluator.validatorAssignments(validatorD), 3);
+        assertEq(responsiveEvaluator.validatorResponses(validatorD), 0);
+        assertEq(responsiveEvaluator.validatorResponseScore(validatorD), 50);
+
+        _approveAndStake(address(responsiveEvaluator), validatorC, MINIMUM_STAKE);
+
+        vm.prank(client);
+        uint256 jobId = commerce.createJob(
+            provider, address(responsiveEvaluator), block.timestamp + 7 days, "response-weighted committee job"
+        );
+
+        vm.prank(client);
+        commerce.setBudget(jobId, BUDGET);
+
+        vm.prank(client);
+        commerce.fund(jobId, BUDGET);
+
+        vm.prank(provider);
+        commerce.submit(jobId, keccak256("deliverable:response-weighted-committee"));
+
+        bytes32 successAttestation = keccak256("attestation:response-weighted-approved");
+        bytes32 failureAttestation = keccak256("attestation:response-weighted-rejected");
+
+        vm.prevrandao(keccak256("response-weighted-selection-seed"));
+
+        bytes32 selectionSeed = keccak256(
+            abi.encode(block.prevrandao, block.timestamp, jobId, successAttestation, failureAttestation, uint256(2))
+        );
+
+        responsiveEvaluator.configureJob(jobId, successAttestation, failureAttestation, 2, 1);
+
+        address[] memory committee = responsiveEvaluator.getCommittee(jobId);
+        assertEq(committee.length, 2);
+
+        address[] memory candidates = new address[](4);
+        candidates[0] = validatorA;
+        candidates[1] = validatorB;
+        candidates[2] = validatorD;
+        candidates[3] = validatorC;
+
+        uint16[] memory adjustedWeights = new uint16[](4);
+        adjustedWeights[0] = 10_000;
+        adjustedWeights[1] = 10_000;
+        adjustedWeights[2] = 5_000;
+        adjustedWeights[3] = 10_000;
+
+        address[] memory expectedCommittee = _expectedWeightedCommittee(candidates, adjustedWeights, selectionSeed, 2);
         assertEq(committee[0], expectedCommittee[0]);
         assertEq(committee[1], expectedCommittee[1]);
     }

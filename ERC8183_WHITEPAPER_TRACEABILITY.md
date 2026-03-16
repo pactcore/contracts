@@ -31,7 +31,7 @@ Current implementation:
 - Committee configuration now requires the commerce job to already be `Submitted`, and it is single-shot per job, which keeps the validator review deadline anchored to posted evidence instead of allowing premature or replayed reconfiguration windows.
 - The validator share remains the commerce-layer 5% reward lane.
 - `consecutiveDeviations`, `slashAfterDisagreements`, and `slashingBps` implement repeated-deviation slashing.
-- `configureJob(...)` now pseudo-randomly samples a fixed per-job committee from the active validator set using owner-managed validator reputation weights, filters out validators whose current stake cannot cover the job's slashable reward requirement, reserves pending slashable stake for every selected validator before any votes are cast, and `castVote(...)` rejects non-selected validators so not every staker can pile into every review.
+- `configureJob(...)` now pseudo-randomly samples a fixed per-job committee from the active validator set using owner-managed validator reputation weights, filters out validators whose current stake cannot cover the job's slashable reward requirement, reserves pending slashable stake for every selected validator before any votes are cast, tracks committee assignments versus actual vote responses, and `castVote(...)` rejects non-selected validators so not every staker can pile into every review.
 - `validatorRewardForJob(jobId)`, `minimumRequiredStakeForJob(jobId)`, committee selection, and the `castVote(...)` stake-coverage check now enforce the paper's `alpha >= R / Stake` condition per job before a validator can participate.
 - `finalizeJobAccounting(jobId)` delays reward allocation until either the dispute window expires or a raised dispute is resolved.
 
@@ -53,13 +53,13 @@ Whitepaper intent:
 
 Current implementation:
 - `src/hooks/ReputationGateHook.sol` and `src/hooks/CounterpartyPolicyHook.sol` enforce provider-score gating and evaluator allowlists around the ERC-8183 commerce flow.
-- `src/evaluators/CommitteeReviewEvaluator.sol` also supports owner-managed validator reputation baselines in the whitepaper's 0-100 range, records resolved/aligned/no-contest vote history onchain, and feeds that performance history back into per-job committee selection weights.
+- `src/evaluators/CommitteeReviewEvaluator.sol` also supports owner-managed validator reputation baselines in the whitepaper's 0-100 range, records resolved/aligned/no-contest vote history plus committee assignment/response history onchain, and feeds those performance signals back into per-job committee selection weights.
 
 ## Explicit remaining gaps
 
 The current contracts intentionally stop short of full whitepaper parity in a few places:
 - No onchain Layer 1 auto-validation module exists yet; the repo starts at ERC-8183 job submission plus evaluator review.
-- Committee selection is now pseudo-random per job and reputation-weighted, but it still relies on `block.prevrandao` plus owner-configured baseline scores; the new onchain accuracy history only partially closes the broader whitepaper reputation-system gap and does not yet derive weights from uptime or appeal win rate.
+- Committee selection is now pseudo-random per job and combines baseline reputation, onchain review accuracy, and committee response history, but it still relies on `block.prevrandao` plus owner-configured baseline scores and does not yet derive weights from uptime or appeal win rate.
 - Juror eligibility is reputation-gated and panel selection is pseudo-random, but the full whitepaper reputation system (validator accuracy, appeal win rate, uptime, broader juror scoring updates) is not yet persisted onchain.
 
 ## Validation run
