@@ -299,6 +299,58 @@ contract CommitteeReviewEvaluatorTest is Test {
         assertEq(usdc.balanceOf(validatorC), validatorCBalanceBefore + validatorReward);
     }
 
+    function testValidatorAppealScoreDefaultsToMaximumAndPenalizesOverturnedVotes() external {
+        assertEq(committeeEvaluator.validatorAppealScore(validatorA), 100);
+        assertEq(committeeEvaluator.validatorSelectionWeight(validatorA), 10_000);
+
+        uint256 jobId = _createAndFundJob(7 days);
+        bytes32 deliverable = keccak256("deliverable:appeal-score-override");
+        bytes32 successAttestation = keccak256("attestation:appeal-score-approved");
+        bytes32 failureAttestation = keccak256("attestation:appeal-score-rejected");
+
+        vm.prank(provider);
+        commerce.submit(jobId, deliverable);
+
+        committeeEvaluator.configureJob(jobId, successAttestation, failureAttestation, 2, 2);
+
+        vm.prank(validatorA);
+        committeeEvaluator.castVote(jobId, CommitteeReviewEvaluator.VoteChoice.Approve);
+
+        vm.prank(validatorC);
+        committeeEvaluator.castVote(jobId, CommitteeReviewEvaluator.VoteChoice.Reject);
+
+        vm.prank(validatorB);
+        committeeEvaluator.castVote(jobId, CommitteeReviewEvaluator.VoteChoice.Approve);
+
+        uint256 disputeBond = commerce.disputeBondAmount();
+
+        vm.prank(challenger);
+        uint256 disputeId = commerce.raiseDispute(
+            jobId,
+            keccak256("committee-decision"),
+            keccak256("committee://appeal-score-override"),
+            keccak256("evidence://appeal-score-override"),
+            disputeBond
+        );
+
+        commerce.resolveDispute(disputeId, true, IPactCommerce.Status.Rejected, failureAttestation);
+        committeeEvaluator.finalizeJobAccounting(jobId);
+
+        assertEq(committeeEvaluator.validatorResolvedAppeals(validatorA), 1);
+        assertEq(committeeEvaluator.validatorResolvedAppeals(validatorB), 1);
+        assertEq(committeeEvaluator.validatorResolvedAppeals(validatorC), 1);
+        assertEq(committeeEvaluator.validatorAlignedAppeals(validatorA), 0);
+        assertEq(committeeEvaluator.validatorAlignedAppeals(validatorB), 0);
+        assertEq(committeeEvaluator.validatorAlignedAppeals(validatorC), 1);
+
+        assertEq(committeeEvaluator.validatorAppealScore(validatorA), 75);
+        assertEq(committeeEvaluator.validatorAppealScore(validatorB), 75);
+        assertEq(committeeEvaluator.validatorAppealScore(validatorC), 100);
+        assertEq(committeeEvaluator.validatorSelectionWeight(validatorA), 6_000);
+        assertEq(committeeEvaluator.validatorSelectionWeight(validatorB), 6_000);
+        assertEq(committeeEvaluator.validatorSelectionWeight(validatorC), 10_000);
+    }
+
     function testExpiredAppealOutcomeFinalizesAccountingWithoutValidatorRewards() external {
         uint256 jobId = _createAndFundJob(7 days);
         bytes32 deliverable = keccak256("deliverable:expired-appeal");
@@ -423,6 +475,12 @@ contract CommitteeReviewEvaluatorTest is Test {
         _assertValidatorPerformance(validatorA, 1, 1, 1, 1);
         _assertValidatorPerformance(validatorB, 1, 1, 1, 1);
         _assertValidatorPerformance(validatorC, 1, 0, 1, 1);
+        assertEq(committeeEvaluator.validatorResolvedAppeals(validatorA), 0);
+        assertEq(committeeEvaluator.validatorResolvedAppeals(validatorB), 0);
+        assertEq(committeeEvaluator.validatorResolvedAppeals(validatorC), 0);
+        assertEq(committeeEvaluator.validatorAppealScore(validatorA), 100);
+        assertEq(committeeEvaluator.validatorAppealScore(validatorB), 100);
+        assertEq(committeeEvaluator.validatorAppealScore(validatorC), 100);
         assertEq(committeeEvaluator.validatorReputation(validatorA), 100);
         assertEq(committeeEvaluator.validatorReputation(validatorC), 80);
     }
@@ -862,7 +920,10 @@ contract CommitteeReviewEvaluatorTest is Test {
 
         assertEq(committeeEvaluator.validatorResponseScore(validatorA), 100);
         assertEq(committeeEvaluator.validatorResponseScore(validatorC), 75);
-        assertLt(committeeEvaluator.validatorSelectionWeight(validatorC), committeeEvaluator.validatorSelectionWeight(validatorA));
+        assertLt(
+            committeeEvaluator.validatorSelectionWeight(validatorC),
+            committeeEvaluator.validatorSelectionWeight(validatorA)
+        );
     }
 
     function testWeightedCommitteeSelectionPenalizesRepeatedNoShows() external {

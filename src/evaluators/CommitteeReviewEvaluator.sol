@@ -64,6 +64,7 @@ contract CommitteeReviewEvaluator is IEvaluatorSettlementRecipient, Ownable, Ree
     uint16 public constant MAX_VALIDATOR_REPUTATION = 100;
     uint256 private constant REPUTATION_PRIOR_WEIGHT = 4;
     uint256 private constant RESPONSE_PRIOR_WEIGHT = 3;
+    uint256 private constant APPEAL_PRIOR_WEIGHT = 3;
 
     IPactCommerce public immutable commerce;
     IERC20 public immutable settlementToken;
@@ -80,6 +81,8 @@ contract CommitteeReviewEvaluator is IEvaluatorSettlementRecipient, Ownable, Ree
     mapping(address validator => bool initialized) private validatorReputationInitialized;
     mapping(address validator => uint32 assignments) public validatorAssignments;
     mapping(address validator => uint32 responses) public validatorResponses;
+    mapping(address validator => uint32 resolvedAppeals) public validatorResolvedAppeals;
+    mapping(address validator => uint32 alignedAppeals) public validatorAlignedAppeals;
     mapping(uint256 jobId => JobConfig) public jobConfigs;
     mapping(uint256 jobId => JobResolution) public jobResolutions;
     mapping(uint256 jobId => VoteTally) public tallies;
@@ -332,8 +335,31 @@ contract CommitteeReviewEvaluator is IEvaluatorSettlementRecipient, Ownable, Ree
         return uint16(derivedResponseScore);
     }
 
+    function validatorAppealScore(address validator) public view returns (uint16) {
+        uint256 resolvedAppeals = validatorResolvedAppeals[validator];
+        if (resolvedAppeals == 0) {
+            return MAX_VALIDATOR_REPUTATION;
+        }
+
+        uint256 derivedAppealScore =
+            (uint256(MAX_VALIDATOR_REPUTATION) * (uint256(validatorAlignedAppeals[validator]) + APPEAL_PRIOR_WEIGHT))
+                / (resolvedAppeals + APPEAL_PRIOR_WEIGHT);
+        if (derivedAppealScore == 0) {
+            return 1;
+        }
+
+        // forge-lint: disable-next-line(unsafe-typecast)
+        return uint16(derivedAppealScore);
+    }
+
     function validatorSelectionWeight(address validator) public view returns (uint256) {
-        return uint256(validatorReputation(validator)) * uint256(validatorResponseScore(validator));
+        uint256 selectionWeight = uint256(validatorReputation(validator)) * uint256(validatorResponseScore(validator))
+            * uint256(validatorAppealScore(validator)) / MAX_VALIDATOR_REPUTATION;
+        if (selectionWeight == 0) {
+            return 1;
+        }
+
+        return selectionWeight;
     }
 
     function castVote(uint256 jobId, VoteChoice choice) external {
@@ -650,11 +676,16 @@ contract CommitteeReviewEvaluator is IEvaluatorSettlementRecipient, Ownable, Ree
     ) internal {
         ValidatorPerformance storage performance = validatorPerformances[validatorAddress];
         performance.resolvedVotes += 1;
-        if (validatorChoice == finalOutcome) {
+        bool aligned = validatorChoice == finalOutcome;
+        if (aligned) {
             performance.alignedVotes += 1;
         }
         if (disputed) {
             performance.disputedVotes += 1;
+            validatorResolvedAppeals[validatorAddress] += 1;
+            if (aligned) {
+                validatorAlignedAppeals[validatorAddress] += 1;
+            }
         }
 
         emit ValidatorPerformanceUpdated(

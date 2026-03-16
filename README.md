@@ -127,7 +127,7 @@ Purpose:
 - Lets selected validators stake the settlement token, cast `Approve` / `Reject` / `Uncertain` votes, and resolve a submitted job once an approval or rejection threshold is met.
 - Routes the validator settlement share into the evaluator contract, rejects votes when a validator's stake cannot economically cover the job's validator reward share, and only finalizes validator rewards after either the committee dispute window expires or a terminal `raiseDispute(...)` challenge is resolved; appeals that end in an `Expired` final job state now withhold validator rewards without counting the unresolved review as a validator deviation.
 - Tracks consecutive deviations from the final committee-or-jury outcome and slashes validator stake after a configurable number of disagreements, so jury/governance review can override committee-majority accounting instead of merely annotating it.
-- Blends owner-set validator baselines with onchain final-outcome accuracy, tracks committee assignments versus actual vote responses, and feeds both signals back into future committee selection weights.
+- Blends owner-set validator baselines with onchain final-outcome accuracy, committee response history, and resolved-appeal alignment so validators who are repeatedly overturned by jury / governance review get downweighted in future committee selection weights.
 - Locks validator unstaking from committee selection through final accounting, preserving slashable stake even for validators who never cast a vote until the whitepaper-style appeal lane finishes.
 - Can optionally bind votes to the hash of opaque evaluator `optParams`, so receipt bundles or evidence payloads stay hash-checked all the way into settlement.
 

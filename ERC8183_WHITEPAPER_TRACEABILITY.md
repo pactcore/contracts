@@ -53,13 +53,13 @@ Whitepaper intent:
 
 Current implementation:
 - `src/hooks/ReputationGateHook.sol` and `src/hooks/CounterpartyPolicyHook.sol` enforce provider-score gating and evaluator allowlists around the ERC-8183 commerce flow.
-- `src/evaluators/CommitteeReviewEvaluator.sol` also supports owner-managed validator reputation baselines in the whitepaper's 0-100 range, records resolved/aligned/no-contest vote history plus committee assignment/response history onchain, and feeds those performance signals back into per-job committee selection weights.
+- `src/evaluators/CommitteeReviewEvaluator.sol` also supports owner-managed validator reputation baselines in the whitepaper's 0-100 range, records resolved/aligned/no-contest vote history plus committee assignment/response history and resolved-appeal alignment onchain, and feeds those performance signals back into per-job committee selection weights.
 
 ## Explicit remaining gaps
 
 The current contracts intentionally stop short of full whitepaper parity in a few places:
 - No onchain Layer 1 auto-validation module exists yet; the repo starts at ERC-8183 job submission plus evaluator review.
-- Committee selection is now pseudo-random per job and combines baseline reputation, onchain review accuracy, and committee response history, but it still relies on `block.prevrandao` plus owner-configured baseline scores and does not yet derive weights from uptime or appeal win rate.
+- Committee selection is now pseudo-random per job and combines baseline reputation, onchain review accuracy, committee response history, and resolved-appeal alignment, but it still relies on `block.prevrandao` plus owner-configured baseline scores and does not yet derive weights from direct uptime telemetry.
 - Juror eligibility is reputation-gated and panel selection now blends baseline reputation with onchain appeal accuracy, response history, and concurrent panel load, but the broader whitepaper reputation system still stops short of full cross-role uptime scoring, non-jury reputation propagation, and stronger-than-`block.prevrandao` entropy for panel draws.
 
 ## Validation run
