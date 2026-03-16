@@ -7,11 +7,13 @@ This note maps the current Solidity implementation to the latest English whitepa
 ### 6.3 Multi-layer validation flow
 
 Whitepaper intent:
+- Layer 1 auto validation cheaply handles clear-cut submissions before subjective review is needed.
 - Layer 2 agent validators review subjective work and earn a 5% validator reward.
 - Incorrect validation can be slashed.
 - Layer 3 human jury handles disputes and appeals.
 
 Current implementation:
+- `src/evaluators/LayeredAutoReviewEvaluator.sol` now models the Layer 1 auto-validation lane as an ERC-8183 evaluator contract that auto-completes matching submissions, auto-rejects obvious mismatches when configured to do so, or escalates uncertain cases into a designated Layer-2 review authority without changing the job's evaluator address.
 - `src/evaluators/CommitteeReviewEvaluator.sol` models the Layer 2 validator committee as a single ERC-8183 evaluator address.
 - Validators stake the settlement token, vote `Approve` / `Reject` / `Uncertain`, and only receive the validator share after dispute-aware accounting finalizes.
 - Committee selection now excludes the job's client/provider/evaluator so the sampled validator panel stays independent from the job participants it is reviewing.
@@ -58,7 +60,7 @@ Current implementation:
 ## Explicit remaining gaps
 
 The current contracts intentionally stop short of full whitepaper parity in a few places:
-- No onchain Layer 1 auto-validation module exists yet; the repo starts at ERC-8183 job submission plus evaluator review.
+- Layer 1 auto validation is now represented onchain, but the actual image/GPS/timestamp inference still arrives as opaque offchain evidence hashes instead of a native onchain AI or ZK proof verifier, and the whitepaper's "free" Layer 1 economics still map onto the existing evaluator reward lane.
 - Committee selection is now pseudo-random per job and combines baseline reputation, onchain review accuracy, committee response history, and resolved-appeal alignment, but it still relies on `block.prevrandao` plus owner-configured baseline scores and does not yet derive weights from direct uptime telemetry.
 - Juror eligibility is reputation-gated and panel selection now blends baseline reputation with onchain appeal accuracy, response history, and concurrent panel load, but the broader whitepaper reputation system still stops short of full cross-role uptime scoring, non-jury reputation propagation, and stronger-than-`block.prevrandao` entropy for panel draws.
 

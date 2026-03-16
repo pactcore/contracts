@@ -117,6 +117,19 @@ Purpose:
 
 This is the PACT path for zk-proof verifiers, receipts, or other deterministic validation contracts. Human judges, multisigs, and DAOs fit the same surface by simply being the `evaluator` address on a job.
 
+### Layer-1 Auto / Layer-2 Escalation Evaluator
+File: `src/evaluators/LayeredAutoReviewEvaluator.sol`
+
+Purpose:
+- Adds an explicit Layer-1 automatic validation path to the ERC-8183 evaluator surface instead of jumping straight from submission to human or committee review.
+- Auto-completes when the submitted deliverable commitment and optional opaque evidence hash match the configured rule.
+- Auto-rejects mismatches when no secondary reviewer is configured.
+- Escalates mismatches into a designated Layer-2 review authority while preserving the original ERC-8183 evaluator address, so uncertain jobs stay in `Submitted` until the fallback reviewer resolves them through the same contract.
+- Records pending evidence hashes onchain so fallback review has a durable handoff point for edge cases.
+- Implements `settlementRecipient()` so the validator share routes to the evaluator owner instead of remaining trapped on the evaluator contract.
+
+This is the PACT bridge between the whitepaper's Layer-1 auto-validation lane and the existing Layer-2 validator or agent-review paths.
+
 ### Committee Evaluator
 File: `src/evaluators/CommitteeReviewEvaluator.sol`
 
@@ -188,6 +201,7 @@ The rest of the repository remains unchanged:
 - hook enforcement, callback recording, provider-score verification telemetry, evaluator allowlist enforcement, and combined counterparty policy enforcement
 - rollback when an `afterAction` policy hook rejects settlement
 - deterministic evaluator completion and rejection paths, including forwarded opaque evaluation params, hash-bound proof bundle checks, and one-shot expectation consumption
+- layered auto-review evaluation, including Layer-1 auto-pass, Layer-1 auto-reject, and mismatch escalation into a designated Layer-2 reviewer without swapping the job's evaluator address
 
 `test/CommitteeReviewEvaluator.t.sol` covers committee approval and rejection flows, reputation- and response-weighted sampled-committee membership enforcement, stake-coverage-aware committee capacity checks, selected-validator unstake locks until accounting finalization, dispute-window gating, jury/dispute overrides of validator accounting, expired-appeal no-fault accounting, reward splitting across aligned validators, opt-params hash binding, performance-derived validator reputation updates, no-show penalties in future selection, and slashing after three consecutive deviations.
 

@@ -6,6 +6,7 @@ import {Test} from "forge-std/Test.sol";
 import {PactCommerce} from "../src/PactCommerce.sol";
 import {DeterministicReceiptEvaluator} from "../src/evaluators/DeterministicReceiptEvaluator.sol";
 import {GovernanceReviewEvaluator} from "../src/evaluators/GovernanceReviewEvaluator.sol";
+import {LayeredAutoReviewEvaluator} from "../src/evaluators/LayeredAutoReviewEvaluator.sol";
 import {PactGovernance} from "../src/PactGovernance.sol";
 import {ApprovedEvaluatorHook} from "../src/hooks/ApprovedEvaluatorHook.sol";
 import {CounterpartyPolicyHook} from "../src/hooks/CounterpartyPolicyHook.sol";
@@ -21,6 +22,7 @@ contract PactCommerceTest is Test {
     CounterpartyPolicyHook private counterpartyPolicyHook;
     ReputationGateHook private reputationHook;
     DeterministicReceiptEvaluator private deterministicEvaluator;
+    LayeredAutoReviewEvaluator private layeredAutoEvaluator;
     MockUSDC private governanceToken;
     PactGovernance private governance;
     GovernanceReviewEvaluator private governanceEvaluator;
@@ -56,6 +58,7 @@ contract PactCommerceTest is Test {
         counterpartyPolicyHook = new CounterpartyPolicyHook(address(commerce), MINIMUM_PROVIDER_SCORE);
         reputationHook = new ReputationGateHook(address(commerce), MINIMUM_PROVIDER_SCORE);
         deterministicEvaluator = new DeterministicReceiptEvaluator(address(commerce));
+        layeredAutoEvaluator = new LayeredAutoReviewEvaluator(address(commerce));
         governanceToken = new MockUSDC();
         governance = new PactGovernance(
             address(governanceToken), VOTING_DELAY, VOTING_PERIOD, TIMELOCK_DELAY, PROPOSAL_THRESHOLD, QUORUM
@@ -663,6 +666,122 @@ contract PactCommerceTest is Test {
         assertEq(reputationHook.lastAfterSelector(), commerce.REJECT_SELECTOR());
         assertEq(reputationHook.lastBeforeDataHash(), keccak256(abi.encode(failureAttestation, evaluatorOptParams)));
         assertEq(reputationHook.lastAfterDataHash(), keccak256(abi.encode(failureAttestation, evaluatorOptParams)));
+    }
+
+    function testLayeredAutoEvaluatorCompletesAutomaticallyWhenEvidenceMatches() external {
+        uint256 jobId = _createAndFundJob(provider, address(layeredAutoEvaluator), address(0), BUDGET, 7 days);
+        bytes32 deliverable = keccak256("auto-proof");
+        bytes32 successAttestation = keccak256("layer1:auto-approved");
+        bytes32 failureAttestation = keccak256("layer1:auto-rejected");
+        bytes memory evidence = abi.encode("proof://bundle", uint256(7));
+
+        layeredAutoEvaluator.setRuleWithEvidenceHash(
+            jobId, deliverable, successAttestation, failureAttestation, address(0), keccak256(evidence)
+        );
+
+        vm.prank(provider);
+        commerce.submit(jobId, deliverable);
+
+        layeredAutoEvaluator.evaluate(jobId, evidence);
+
+        IPactCommerce.Job memory job = commerce.getJob(jobId);
+        uint256 validatorAmount = (BUDGET * VALIDATOR_REWARD_BPS) / 10_000;
+        uint256 treasuryAmount = (BUDGET * PLATFORM_FEE_BPS) / 10_000;
+        uint256 issuerAmount = (BUDGET * ISSUER_REBATE_BPS) / 10_000;
+        uint256 providerAmount = BUDGET - validatorAmount - treasuryAmount - issuerAmount;
+
+        assertEq(uint8(job.status), uint8(IPactCommerce.Status.Completed));
+        assertEq(job.attestation, successAttestation);
+        assertEq(usdc.balanceOf(provider), providerAmount);
+        assertEq(usdc.balanceOf(address(this)), validatorAmount);
+        assertEq(usdc.balanceOf(treasury), treasuryAmount);
+        assertEq(usdc.balanceOf(client), INITIAL_BALANCE - BUDGET + issuerAmount);
+        assertFalse(layeredAutoEvaluator.manualReviewPending(jobId));
+        assertEq(layeredAutoEvaluator.pendingEvidenceHashes(jobId), bytes32(0));
+    }
+
+    function testLayeredAutoEvaluatorEscalatesMismatchToReviewAuthority() external {
+        address reviewAuthority = makeAddr("reviewAuthority");
+        reputationHook.setProviderScore(provider, 100);
+
+        uint256 jobId =
+            _createAndFundJob(provider, address(layeredAutoEvaluator), address(reputationHook), BUDGET, 7 days);
+        bytes32 expectedDeliverable = keccak256("auto-proof");
+        bytes32 wrongDeliverable = keccak256("edge-case-proof");
+        bytes32 successAttestation = keccak256("layer1:auto-approved");
+        bytes32 failureAttestation = keccak256("layer1:auto-rejected");
+        bytes32 reviewAttestation = keccak256("layer2:agent-approved");
+        bytes memory wrongEvidence = abi.encode("proof://bundle", uint256(8));
+        bytes memory reviewOptParams = abi.encode("validator://manual-review", uint256(11));
+
+        layeredAutoEvaluator.setRuleWithEvidenceHash(
+            jobId,
+            expectedDeliverable,
+            successAttestation,
+            failureAttestation,
+            reviewAuthority,
+            keccak256(abi.encode("proof://bundle", uint256(7)))
+        );
+
+        vm.prank(provider);
+        commerce.submit(jobId, wrongDeliverable);
+
+        layeredAutoEvaluator.evaluate(jobId, wrongEvidence);
+
+        IPactCommerce.Job memory job = commerce.getJob(jobId);
+        assertEq(uint8(job.status), uint8(IPactCommerce.Status.Submitted));
+        assertTrue(layeredAutoEvaluator.manualReviewPending(jobId));
+        assertEq(layeredAutoEvaluator.pendingEvidenceHashes(jobId), keccak256(wrongEvidence));
+
+        vm.expectRevert(
+            abi.encodeWithSelector(LayeredAutoReviewEvaluator.OnlyReviewAuthority.selector, outsider, reviewAuthority)
+        );
+        vm.prank(outsider);
+        layeredAutoEvaluator.resolveManualReview(jobId, true, reviewAttestation, reviewOptParams);
+
+        vm.prank(reviewAuthority);
+        layeredAutoEvaluator.resolveManualReview(jobId, true, reviewAttestation, reviewOptParams);
+
+        job = commerce.getJob(jobId);
+        uint256 validatorAmount = (BUDGET * VALIDATOR_REWARD_BPS) / 10_000;
+        uint256 treasuryAmount = (BUDGET * PLATFORM_FEE_BPS) / 10_000;
+        uint256 issuerAmount = (BUDGET * ISSUER_REBATE_BPS) / 10_000;
+        uint256 providerAmount = BUDGET - validatorAmount - treasuryAmount - issuerAmount;
+
+        assertEq(uint8(job.status), uint8(IPactCommerce.Status.Completed));
+        assertEq(job.attestation, reviewAttestation);
+        assertEq(usdc.balanceOf(provider), providerAmount);
+        assertEq(usdc.balanceOf(address(this)), validatorAmount);
+        assertEq(usdc.balanceOf(treasury), treasuryAmount);
+        assertEq(usdc.balanceOf(client), INITIAL_BALANCE - BUDGET + issuerAmount);
+        assertFalse(layeredAutoEvaluator.manualReviewPending(jobId));
+        assertEq(layeredAutoEvaluator.pendingEvidenceHashes(jobId), bytes32(0));
+        assertEq(reputationHook.lastBeforeSelector(), commerce.COMPLETE_SELECTOR());
+        assertEq(reputationHook.lastAfterSelector(), commerce.COMPLETE_SELECTOR());
+        assertEq(reputationHook.lastBeforeDataHash(), keccak256(abi.encode(reviewAttestation, reviewOptParams)));
+        assertEq(reputationHook.lastAfterDataHash(), keccak256(abi.encode(reviewAttestation, reviewOptParams)));
+    }
+
+    function testLayeredAutoEvaluatorRejectsMismatchWithoutReviewAuthority() external {
+        uint256 jobId = _createAndFundJob(provider, address(layeredAutoEvaluator), address(0), BUDGET, 7 days);
+        bytes32 expectedDeliverable = keccak256("auto-proof");
+        bytes32 wrongDeliverable = keccak256("bad-proof");
+        bytes32 successAttestation = keccak256("layer1:auto-approved");
+        bytes32 failureAttestation = keccak256("layer1:auto-rejected");
+
+        layeredAutoEvaluator.setRule(jobId, expectedDeliverable, successAttestation, failureAttestation, address(0));
+
+        vm.prank(provider);
+        commerce.submit(jobId, wrongDeliverable);
+
+        layeredAutoEvaluator.evaluate(jobId);
+
+        IPactCommerce.Job memory job = commerce.getJob(jobId);
+        assertEq(uint8(job.status), uint8(IPactCommerce.Status.Rejected));
+        assertEq(job.attestation, failureAttestation);
+        assertEq(usdc.balanceOf(client), INITIAL_BALANCE);
+        assertEq(usdc.balanceOf(address(commerce)), 0);
+        assertFalse(layeredAutoEvaluator.manualReviewPending(jobId));
     }
 
     function testClientAsHumanJudgeCanCompleteSubmittedJob() external {
