@@ -44,7 +44,7 @@ Whitepaper intent:
 Current implementation:
 - `PactCommerce.raiseDispute(...)` requires the fixed dispute bond and only allows one terminal-state dispute per job.
 - `PactCommerce.resolveDispute(...)` routes the bond differently for upheld vs. rejected disputes.
-- `CommitteeReviewEvaluator.finalizeJobAccounting(...)` waits for either dispute expiry or dispute resolution before releasing slashable stake and validator rewards.
+- `CommitteeReviewEvaluator.finalizeJobAccounting(...)` waits for either dispute expiry or dispute resolution before releasing slashable stake and validator rewards, and treats upheld appeals that end in `Expired` as no-fault outcomes so unresolved review does not count as a validator disagreement.
 
 ### 6.4 Reputation-aware policy hooks
 

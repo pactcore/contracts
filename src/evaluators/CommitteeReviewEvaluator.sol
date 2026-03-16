@@ -531,6 +531,12 @@ contract CommitteeReviewEvaluator is IEvaluatorSettlementRecipient, Ownable, Ree
         internal
         returns (uint256 alignedValidatorCount)
     {
+        // An upheld appeal can expire the job without affirming either committee side.
+        // In that case the validator panel should neither earn rewards nor accrue deviations.
+        if (outcome == VoteChoice.None) {
+            return 0;
+        }
+
         address[] storage votersForJob = jobVoters[jobId];
         uint256 voterCount = votersForJob.length;
 
