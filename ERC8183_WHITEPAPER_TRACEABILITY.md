@@ -31,8 +31,8 @@ Current implementation:
 - Committee configuration now requires the commerce job to already be `Submitted`, and it is single-shot per job, which keeps the validator review deadline anchored to posted evidence instead of allowing premature or replayed reconfiguration windows.
 - The validator share remains the commerce-layer 5% reward lane.
 - `consecutiveDeviations`, `slashAfterDisagreements`, and `slashingBps` implement repeated-deviation slashing.
-- `configureJob(...)` now pseudo-randomly samples a fixed per-job committee from the active validator set using owner-managed validator reputation weights, and `castVote(...)` rejects non-selected validators so not every staker can pile into every review.
-- `validatorRewardForJob(jobId)`, `minimumRequiredStakeForJob(jobId)`, and the `castVote(...)` stake-coverage check now enforce the paper's `alpha >= R / Stake` condition per job before a validator can participate.
+- `configureJob(...)` now pseudo-randomly samples a fixed per-job committee from the active validator set using owner-managed validator reputation weights, filters out validators whose current stake cannot cover the job's slashable reward requirement, and `castVote(...)` rejects non-selected validators so not every staker can pile into every review.
+- `validatorRewardForJob(jobId)`, `minimumRequiredStakeForJob(jobId)`, committee selection, and the `castVote(...)` stake-coverage check now enforce the paper's `alpha >= R / Stake` condition per job before a validator can participate.
 - `finalizeJobAccounting(jobId)` delays reward allocation until either the dispute window expires or a raised dispute is resolved.
 
 ### 8.6 Dispute-game settlement

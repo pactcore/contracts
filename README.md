@@ -122,7 +122,7 @@ File: `src/evaluators/CommitteeReviewEvaluator.sol`
 
 Purpose:
 - Adds an ERC-8183-compatible evaluator contract for Layer-2 agent-validator review instead of a single judge address.
-- Pseudo-randomly samples a per-job validator committee from the active staker set with owner-managed 1-100 reputation weights, excludes the job's client/provider/evaluator from that draw, defaults unset validators to the legacy max score, exposes the selected panel onchain, and rejects votes from non-selected validators.
+- Pseudo-randomly samples a per-job validator committee from the active staker set with owner-managed 1-100 reputation weights, excludes the job's client/provider/evaluator from that draw, filters out validators whose current stake cannot cover the job's slashable validator-reward requirement, defaults unset validators to the legacy max score, exposes the selected panel onchain, and rejects votes from non-selected validators.
 - Requires `configureJob(...)` to happen only after the provider has submitted evidence, and only once per job, so the validator review window cannot start early or be reset later to reseed the committee / deadline.
 - Lets selected validators stake the settlement token, cast `Approve` / `Reject` / `Uncertain` votes, and resolve a submitted job once an approval or rejection threshold is met.
 - Routes the validator settlement share into the evaluator contract, rejects votes when a validator's stake cannot economically cover the job's validator reward share, and only finalizes validator rewards after either the committee dispute window expires or a terminal `raiseDispute(...)` challenge is resolved; appeals that end in an `Expired` final job state now withhold validator rewards without counting the unresolved review as a validator deviation.
@@ -187,7 +187,7 @@ The rest of the repository remains unchanged:
 - rollback when an `afterAction` policy hook rejects settlement
 - deterministic evaluator completion and rejection paths, including forwarded opaque evaluation params, hash-bound proof bundle checks, and one-shot expectation consumption
 
-`test/CommitteeReviewEvaluator.t.sol` covers committee approval and rejection flows, reputation-weighted sampled-committee membership enforcement, active-validator capacity checks, dispute-window gating, jury/dispute overrides of validator accounting, expired-appeal no-fault accounting, reward splitting across aligned validators, opt-params hash binding, and slashing after three consecutive deviations.
+`test/CommitteeReviewEvaluator.t.sol` covers committee approval and rejection flows, reputation-weighted sampled-committee membership enforcement, stake-coverage-aware committee capacity checks, dispute-window gating, jury/dispute overrides of validator accounting, expired-appeal no-fault accounting, reward splitting across aligned validators, opt-params hash binding, and slashing after three consecutive deviations.
 
 `test/HumanJury.t.sol` covers high-reputation jury-panel selection, low-reputation juror exclusion, upheld-vs-rejected dispute outcomes, jury reward distribution, and the bridge from committee review into final jury accounting.
 

@@ -364,7 +364,9 @@ contract CommitteeReviewEvaluator is IEvaluatorSettlementRecipient, Ownable, Ree
 
         uint256 committeeSize = uint256(approvalThreshold) + uint256(rejectionThreshold) - 1;
         if (committeeSize > type(uint32).max) revert InvalidConfig();
-        _validateCommitteeCapacity(committeeSize, job);
+
+        uint256 requiredStake = _minimumRequiredStake(validatorRewardForJob(jobId));
+        _validateCommitteeCapacity(committeeSize, job, requiredStake);
 
         JobConfig storage config = jobConfigs[jobId];
         if (config.approvalThreshold != 0 || config.rejectionThreshold != 0) {
@@ -395,7 +397,7 @@ contract CommitteeReviewEvaluator is IEvaluatorSettlementRecipient, Ownable, Ree
         bytes32 selectionSeed = keccak256(
             abi.encode(block.prevrandao, block.timestamp, jobId, successAttestation, failureAttestation, committeeSize)
         );
-        _selectCommittee(jobId, uint32(committeeSize), selectionSeed);
+        _selectCommittee(jobId, uint32(committeeSize), selectionSeed, job, requiredStake);
 
         emit JobConfigured(
             jobId,
@@ -589,8 +591,14 @@ contract CommitteeReviewEvaluator is IEvaluatorSettlementRecipient, Ownable, Ree
         }
     }
 
-    function _selectCommittee(uint256 jobId, uint32 committeeSize, bytes32 selectionSeed) internal {
-        address[] memory candidates = _eligibleValidators(commerce.getJob(jobId));
+    function _selectCommittee(
+        uint256 jobId,
+        uint32 committeeSize,
+        bytes32 selectionSeed,
+        IPactCommerce.Job memory job,
+        uint256 requiredStake
+    ) internal {
+        address[] memory candidates = _eligibleValidators(job, requiredStake);
 
         // Draw without replacement so higher-reputation validators are more likely to land on each job's panel.
         for (uint256 i = 0; i < committeeSize; ++i) {
@@ -621,39 +629,58 @@ contract CommitteeReviewEvaluator is IEvaluatorSettlementRecipient, Ownable, Ree
         emit CommitteeSelected(jobId, selectionSeed, committeeSize);
     }
 
-    function _validateCommitteeCapacity(uint256 committeeSize, IPactCommerce.Job memory job) internal view {
+    function _validateCommitteeCapacity(uint256 committeeSize, IPactCommerce.Job memory job, uint256 requiredStake)
+        internal
+        view
+    {
         uint256 activeValidatorCount = activeValidators.length;
         if (activeValidatorCount < committeeSize) {
             revert InsufficientActiveValidators(committeeSize, activeValidatorCount);
         }
 
-        uint256 eligibleValidatorCount = _eligibleValidatorCount(job);
+        uint256 eligibleValidatorCount = _eligibleValidatorCount(job, requiredStake);
         if (eligibleValidatorCount < committeeSize) {
             revert InsufficientEligibleValidators(eligibleValidatorCount, committeeSize);
         }
     }
 
-    function _eligibleValidatorCount(IPactCommerce.Job memory job) internal view returns (uint256 eligibleCount) {
+    function _eligibleValidatorCount(IPactCommerce.Job memory job, uint256 requiredStake)
+        internal
+        view
+        returns (uint256 eligibleCount)
+    {
         for (uint256 i = 0; i < activeValidators.length; ++i) {
-            if (!_isJobParticipant(activeValidators[i], job)) {
+            if (_isEligibleValidatorForJob(activeValidators[i], job, requiredStake)) {
                 eligibleCount += 1;
             }
         }
     }
 
-    function _eligibleValidators(IPactCommerce.Job memory job) internal view returns (address[] memory candidates) {
-        candidates = new address[](_eligibleValidatorCount(job));
+    function _eligibleValidators(IPactCommerce.Job memory job, uint256 requiredStake)
+        internal
+        view
+        returns (address[] memory candidates)
+    {
+        candidates = new address[](_eligibleValidatorCount(job, requiredStake));
         uint256 cursor;
 
         for (uint256 i = 0; i < activeValidators.length; ++i) {
             address validator = activeValidators[i];
-            if (_isJobParticipant(validator, job)) {
+            if (!_isEligibleValidatorForJob(validator, job, requiredStake)) {
                 continue;
             }
 
             candidates[cursor] = validator;
             cursor += 1;
         }
+    }
+
+    function _isEligibleValidatorForJob(address account, IPactCommerce.Job memory job, uint256 requiredStake)
+        internal
+        view
+        returns (bool)
+    {
+        return !_isJobParticipant(account, job) && validators[account].stake >= requiredStake;
     }
 
     function _isJobParticipant(address account, IPactCommerce.Job memory job) internal pure returns (bool) {
