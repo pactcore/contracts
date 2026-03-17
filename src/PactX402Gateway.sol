@@ -14,9 +14,8 @@ import {ECDSA} from "openzeppelin-contracts/contracts/utils/cryptography/ECDSA.s
 contract PactX402Gateway is EIP712, ReentrancyGuard {
     using SafeERC20 for IERC20;
 
-    bytes32 private constant PAYMENT_TYPEHASH = keccak256(
-        "Payment(address from,address to,uint256 amount,uint256 relayerFee,uint256 nonce,uint256 deadline)"
-    );
+    bytes32 private constant PAYMENT_TYPEHASH =
+        keccak256("Payment(address from,address to,uint256 amount,uint256 relayerFee,uint256 nonce,uint256 deadline)");
 
     IERC20 public immutable usdc;
 
@@ -60,8 +59,7 @@ contract PactX402Gateway is EIP712, ReentrancyGuard {
         if (block.timestamp > deadline) revert DeadlineExpired();
 
         uint256 nonce = nonces[from];
-        bytes32 structHash =
-            keccak256(abi.encode(PAYMENT_TYPEHASH, from, to, amount, relayerFee, nonce, deadline));
+        bytes32 structHash = keccak256(abi.encode(PAYMENT_TYPEHASH, from, to, amount, relayerFee, nonce, deadline));
         bytes32 digest = _hashTypedDataV4(structHash);
         address signer = ECDSA.recover(digest, signature);
         if (signer != from) revert InvalidSignature();
@@ -94,8 +92,7 @@ contract PactX402Gateway is EIP712, ReentrancyGuard {
         uint256 nonce,
         uint256 deadline
     ) external view returns (bytes32) {
-        bytes32 structHash =
-            keccak256(abi.encode(PAYMENT_TYPEHASH, from, to, amount, relayerFee, nonce, deadline));
+        bytes32 structHash = keccak256(abi.encode(PAYMENT_TYPEHASH, from, to, amount, relayerFee, nonce, deadline));
         return _hashTypedDataV4(structHash);
     }
 }
