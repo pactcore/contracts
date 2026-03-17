@@ -28,13 +28,8 @@ contract PactDifferentialPrivacy is Ownable, IPactDifferentialPrivacy {
         datasetId = nextDatasetId;
         nextDatasetId++;
 
-        datasets[datasetId] = DatasetConfig({
-            maxBudget: maxBudget,
-            usedBudget: 0,
-            queryCount: 0,
-            owner: msg.sender,
-            active: true
-        });
+        datasets[datasetId] =
+            DatasetConfig({maxBudget: maxBudget, usedBudget: 0, queryCount: 0, owner: msg.sender, active: true});
 
         emit DatasetRegistered(datasetId, msg.sender, maxBudget);
     }
