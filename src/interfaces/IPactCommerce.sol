@@ -18,6 +18,14 @@ interface IPactCommerce {
         Rejected
     }
 
+    /// @notice Task classification per whitepaper §5.1
+    enum TaskType {
+        Physical, // Location-dependent tasks requiring physical presence
+        Digital, // Online/remote tasks (code, design, data labeling)
+        Verification, // Validation/review tasks
+        Micro // Small, quick tasks (surveys, clicks, simple labels)
+    }
+
     struct Job {
         address client;
         address provider;
@@ -29,6 +37,7 @@ interface IPactCommerce {
         bytes32 deliverable;
         bytes32 attestation;
         string description;
+        TaskType taskType;
     }
 
     struct Dispute {
@@ -53,6 +62,15 @@ interface IPactCommerce {
         uint256 expiredAt,
         string calldata description,
         address hook
+    ) external returns (uint256 jobId);
+
+    function createJob(
+        address provider,
+        address evaluator,
+        uint256 expiredAt,
+        string calldata description,
+        address hook,
+        TaskType taskType
     ) external returns (uint256 jobId);
 
     function setProvider(uint256 jobId, address provider) external;
@@ -89,6 +107,7 @@ interface IPactCommerce {
 
     function claimRefund(uint256 jobId) external;
     function getJob(uint256 jobId) external view returns (Job memory);
+    function getJobTaskType(uint256 jobId) external view returns (TaskType);
     function getDispute(uint256 disputeId) external view returns (Dispute memory);
     function getDisputeForJob(uint256 jobId) external view returns (uint256 disputeId);
     function disputeBondAmount() external view returns (uint256);

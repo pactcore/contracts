@@ -50,7 +50,8 @@ contract PactCommerce is IPactCommerce, Ownable, ReentrancyGuard {
         address evaluator,
         uint256 expiredAt,
         address hook,
-        string description
+        string description,
+        TaskType taskType
     );
     event ProviderSet(uint256 indexed jobId, address indexed provider);
     event EvaluatorSet(uint256 indexed jobId, address indexed evaluator);
@@ -132,7 +133,7 @@ contract PactCommerce is IPactCommerce, Ownable, ReentrancyGuard {
         external
         returns (uint256 jobId)
     {
-        return createJob(provider, evaluator, expiredAt, description, address(0));
+        return _createJob(provider, evaluator, expiredAt, description, address(0), TaskType.Digital);
     }
 
     function createJob(
@@ -142,6 +143,28 @@ contract PactCommerce is IPactCommerce, Ownable, ReentrancyGuard {
         string calldata description,
         address hook
     ) public returns (uint256 jobId) {
+        return _createJob(provider, evaluator, expiredAt, description, hook, TaskType.Digital);
+    }
+
+    function createJob(
+        address provider,
+        address evaluator,
+        uint256 expiredAt,
+        string calldata description,
+        address hook,
+        TaskType taskType
+    ) public returns (uint256 jobId) {
+        return _createJob(provider, evaluator, expiredAt, description, hook, taskType);
+    }
+
+    function _createJob(
+        address provider,
+        address evaluator,
+        uint256 expiredAt,
+        string calldata description,
+        address hook,
+        TaskType taskType
+    ) internal returns (uint256 jobId) {
         if (expiredAt <= block.timestamp) revert InvalidExpiry();
 
         jobId = nextJobId;
@@ -157,10 +180,11 @@ contract PactCommerce is IPactCommerce, Ownable, ReentrancyGuard {
             status: Status.Open,
             deliverable: bytes32(0),
             attestation: bytes32(0),
-            description: description
+            description: description,
+            taskType: taskType
         });
 
-        emit JobCreated(jobId, msg.sender, provider, evaluator, expiredAt, hook, description);
+        emit JobCreated(jobId, msg.sender, provider, evaluator, expiredAt, hook, description, taskType);
     }
 
     function setProvider(uint256 jobId, address provider) external {
@@ -518,6 +542,11 @@ contract PactCommerce is IPactCommerce, Ownable, ReentrancyGuard {
     function getJob(uint256 jobId) external view returns (Job memory) {
         Job storage job = _getJob(jobId);
         return job;
+    }
+
+    function getJobTaskType(uint256 jobId) external view returns (TaskType) {
+        Job storage job = _getJob(jobId);
+        return job.taskType;
     }
 
     function getDispute(uint256 disputeId) external view returns (Dispute memory) {
