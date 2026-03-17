@@ -151,7 +151,8 @@ contract PactMicropaymentAggregator is IPactMicropaymentAggregator, EIP712, Reen
     function _batchDigest(BatchSettlement calldata batch) internal view returns (bytes32) {
         bytes32[] memory entryHashes = new bytes32[](batch.entries.length);
         for (uint256 i; i < batch.entries.length; i++) {
-            entryHashes[i] = keccak256(abi.encode(BATCH_ENTRY_TYPEHASH, batch.entries[i].payee, batch.entries[i].amount));
+            entryHashes[i] =
+                keccak256(abi.encode(BATCH_ENTRY_TYPEHASH, batch.entries[i].payee, batch.entries[i].amount));
         }
 
         bytes32 structHash = keccak256(

@@ -49,20 +49,15 @@ contract PactMicropaymentAggregatorTest is Test {
         agg.openChannel(counterparty, deposit);
     }
 
-    function _makeBatch(
-        address _payee,
-        uint256 amount,
-        uint256 nonce,
-        uint256 deadline
-    ) internal view returns (IPactMicropaymentAggregator.BatchSettlement memory) {
+    function _makeBatch(address _payee, uint256 amount, uint256 nonce, uint256 deadline)
+        internal
+        view
+        returns (IPactMicropaymentAggregator.BatchSettlement memory)
+    {
         IPactMicropaymentAggregator.BatchEntry[] memory entries = new IPactMicropaymentAggregator.BatchEntry[](1);
         entries[0] = IPactMicropaymentAggregator.BatchEntry({payee: _payee, amount: amount});
         return IPactMicropaymentAggregator.BatchSettlement({
-            payer: payer,
-            entries: entries,
-            totalAmount: amount,
-            nonce: nonce,
-            deadline: deadline
+            payer: payer, entries: entries, totalAmount: amount, nonce: nonce, deadline: deadline
         });
     }
 
@@ -130,11 +125,7 @@ contract PactMicropaymentAggregatorTest is Test {
         entries[2] = IPactMicropaymentAggregator.BatchEntry({payee: payee3, amount: 2e6});
 
         IPactMicropaymentAggregator.BatchSettlement memory batch = IPactMicropaymentAggregator.BatchSettlement({
-            payer: payer,
-            entries: entries,
-            totalAmount: 10e6,
-            nonce: 0,
-            deadline: block.timestamp + 1 hours
+            payer: payer, entries: entries, totalAmount: 10e6, nonce: 0, deadline: block.timestamp + 1 hours
         });
 
         bytes memory sig = _signBatch(batch, payerKey);
@@ -160,8 +151,7 @@ contract PactMicropaymentAggregatorTest is Test {
     function test_settleBatch_revertExpiredDeadline() public {
         _openChannel(payee1, 100e6);
 
-        IPactMicropaymentAggregator.BatchSettlement memory batch =
-            _makeBatch(payee1, 10e6, 0, block.timestamp - 1);
+        IPactMicropaymentAggregator.BatchSettlement memory batch = _makeBatch(payee1, 10e6, 0, block.timestamp - 1);
         bytes memory sig = _signBatch(batch, payerKey);
 
         vm.expectRevert(PactMicropaymentAggregator.DeadlineExpired.selector);
@@ -208,11 +198,7 @@ contract PactMicropaymentAggregatorTest is Test {
 
         IPactMicropaymentAggregator.BatchEntry[] memory entries = new IPactMicropaymentAggregator.BatchEntry[](0);
         IPactMicropaymentAggregator.BatchSettlement memory batch = IPactMicropaymentAggregator.BatchSettlement({
-            payer: payer,
-            entries: entries,
-            totalAmount: 0,
-            nonce: 0,
-            deadline: block.timestamp + 1 hours
+            payer: payer, entries: entries, totalAmount: 0, nonce: 0, deadline: block.timestamp + 1 hours
         });
         bytes memory sig = _signBatch(batch, payerKey);
 
@@ -251,11 +237,7 @@ contract PactMicropaymentAggregatorTest is Test {
         entries[1] = IPactMicropaymentAggregator.BatchEntry({payee: address(0), amount: 5e6});
 
         IPactMicropaymentAggregator.BatchSettlement memory batch = IPactMicropaymentAggregator.BatchSettlement({
-            payer: payer,
-            entries: entries,
-            totalAmount: 10e6,
-            nonce: 0,
-            deadline: block.timestamp + 1 hours
+            payer: payer, entries: entries, totalAmount: 10e6, nonce: 0, deadline: block.timestamp + 1 hours
         });
         bytes memory sig = _signBatch(batch, payerKey);
 
@@ -266,18 +248,13 @@ contract PactMicropaymentAggregatorTest is Test {
     function test_settleBatch_revertZeroAmountEntry() public {
         _openChannel(payee1, 100e6);
 
-        IPactMicropaymentAggregator.BatchSettlement memory batch =
-            _makeBatch(payee1, 0, 0, block.timestamp + 1 hours);
+        IPactMicropaymentAggregator.BatchSettlement memory batch = _makeBatch(payee1, 0, 0, block.timestamp + 1 hours);
         // This has totalAmount=0 with one entry of amount=0
         // But EmptyBatch only checks entries.length; let's make it one entry with zero amount
         IPactMicropaymentAggregator.BatchEntry[] memory entries = new IPactMicropaymentAggregator.BatchEntry[](1);
         entries[0] = IPactMicropaymentAggregator.BatchEntry({payee: payee1, amount: 0});
         batch = IPactMicropaymentAggregator.BatchSettlement({
-            payer: payer,
-            entries: entries,
-            totalAmount: 0,
-            nonce: 0,
-            deadline: block.timestamp + 1 hours
+            payer: payer, entries: entries, totalAmount: 0, nonce: 0, deadline: block.timestamp + 1 hours
         });
         bytes memory sig = _signBatch(batch, payerKey);
 
