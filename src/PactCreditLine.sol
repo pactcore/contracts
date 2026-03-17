@@ -48,13 +48,11 @@ contract PactCreditLine is AccessControl {
     }
 
     /// @notice Open a new credit line from issuer to borrower
-    function openLine(
-        address issuer,
-        address borrower,
-        uint256 limitCents,
-        uint16 interestBps,
-        uint64 expiresAt
-    ) external onlyRole(DEFAULT_ADMIN_ROLE) returns (uint256 lineId) {
+    function openLine(address issuer, address borrower, uint256 limitCents, uint16 interestBps, uint64 expiresAt)
+        external
+        onlyRole(DEFAULT_ADMIN_ROLE)
+        returns (uint256 lineId)
+    {
         if (issuer == address(0) || borrower == address(0)) revert InvalidParams();
         if (limitCents == 0) revert InvalidParams();
 
