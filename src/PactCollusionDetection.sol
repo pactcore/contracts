@@ -171,12 +171,11 @@ contract PactCollusionDetection is Ownable {
     // ── Signal Submission ─────────────────────────────────────────────────
 
     /// @notice Submit a new collusion signal from an off-chain detector.
-    function submitSignal(
-        SignalType signalType,
-        address[] calldata participants,
-        uint256 confidence,
-        bytes32 auctionId
-    ) external onlyMonitor returns (uint256 signalId) {
+    function submitSignal(SignalType signalType, address[] calldata participants, uint256 confidence, bytes32 auctionId)
+        external
+        onlyMonitor
+        returns (uint256 signalId)
+    {
         if (participants.length == 0) revert EmptyParticipants();
         if (participants.length > MAX_PARTICIPANTS_PER_SIGNAL) revert TooManyParticipants();
         if (confidence > MAX_CONFIDENCE) revert ConfidenceTooHigh();

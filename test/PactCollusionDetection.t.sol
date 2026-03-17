@@ -117,10 +117,7 @@ contract PactCollusionDetectionTest is Test {
 
         vm.prank(monitor);
         uint256 signalId = detector.submitSignal(
-            PactCollusionDetection.SignalType.RepeatedPairing,
-            participants,
-            0.7e18,
-            keccak256("auction-1")
+            PactCollusionDetection.SignalType.RepeatedPairing, participants, 0.7e18, keccak256("auction-1")
         );
 
         assertEq(signalId, 0);
@@ -151,10 +148,7 @@ contract PactCollusionDetectionTest is Test {
 
         // Owner should also be able to submit (onlyMonitor allows owner)
         uint256 signalId = detector.submitSignal(
-            PactCollusionDetection.SignalType.BidClustering,
-            participants,
-            0.8e18,
-            keccak256("auction-2")
+            PactCollusionDetection.SignalType.BidClustering, participants, 0.8e18, keccak256("auction-2")
         );
 
         assertEq(signalId, 0);
@@ -167,10 +161,7 @@ contract PactCollusionDetectionTest is Test {
         vm.prank(unauthorized);
         vm.expectRevert(PactCollusionDetection.UnauthorizedMonitor.selector);
         detector.submitSignal(
-            PactCollusionDetection.SignalType.BidClustering,
-            participants,
-            0.8e18,
-            keccak256("auction-2")
+            PactCollusionDetection.SignalType.BidClustering, participants, 0.8e18, keccak256("auction-2")
         );
     }
 
@@ -180,10 +171,7 @@ contract PactCollusionDetectionTest is Test {
         vm.prank(monitor);
         vm.expectRevert(PactCollusionDetection.EmptyParticipants.selector);
         detector.submitSignal(
-            PactCollusionDetection.SignalType.BidClustering,
-            participants,
-            0.8e18,
-            keccak256("auction-2")
+            PactCollusionDetection.SignalType.BidClustering, participants, 0.8e18, keccak256("auction-2")
         );
     }
 
@@ -196,10 +184,7 @@ contract PactCollusionDetectionTest is Test {
         vm.prank(monitor);
         vm.expectRevert(PactCollusionDetection.TooManyParticipants.selector);
         detector.submitSignal(
-            PactCollusionDetection.SignalType.BidClustering,
-            participants,
-            0.8e18,
-            keccak256("auction-2")
+            PactCollusionDetection.SignalType.BidClustering, participants, 0.8e18, keccak256("auction-2")
         );
     }
 
@@ -210,10 +195,7 @@ contract PactCollusionDetectionTest is Test {
         vm.prank(monitor);
         vm.expectRevert(PactCollusionDetection.ConfidenceTooHigh.selector);
         detector.submitSignal(
-            PactCollusionDetection.SignalType.BidClustering,
-            participants,
-            1.1e18,
-            keccak256("auction-2")
+            PactCollusionDetection.SignalType.BidClustering, participants, 1.1e18, keccak256("auction-2")
         );
     }
 
@@ -224,10 +206,7 @@ contract PactCollusionDetectionTest is Test {
         vm.prank(monitor);
         vm.expectRevert(PactCollusionDetection.ZeroAddress.selector);
         detector.submitSignal(
-            PactCollusionDetection.SignalType.BidClustering,
-            participants,
-            0.8e18,
-            keccak256("auction-2")
+            PactCollusionDetection.SignalType.BidClustering, participants, 0.8e18, keccak256("auction-2")
         );
     }
 
@@ -238,17 +217,10 @@ contract PactCollusionDetectionTest is Test {
 
         vm.startPrank(monitor);
 
+        detector.submitSignal(PactCollusionDetection.SignalType.RepeatedPairing, participants, 0.6e18, keccak256("a1"));
+        detector.submitSignal(PactCollusionDetection.SignalType.BidClustering, participants, 0.7e18, keccak256("a2"));
         detector.submitSignal(
-            PactCollusionDetection.SignalType.RepeatedPairing,
-            participants, 0.6e18, keccak256("a1")
-        );
-        detector.submitSignal(
-            PactCollusionDetection.SignalType.BidClustering,
-            participants, 0.7e18, keccak256("a2")
-        );
-        detector.submitSignal(
-            PactCollusionDetection.SignalType.TimingCorrelation,
-            participants, 0.8e18, keccak256("a3")
+            PactCollusionDetection.SignalType.TimingCorrelation, participants, 0.8e18, keccak256("a3")
         );
 
         vm.stopPrank();
@@ -256,9 +228,9 @@ contract PactCollusionDetectionTest is Test {
         assertEq(detector.signalCount(), 3);
 
         // Check each type
-        (PactCollusionDetection.SignalType t0,,,,, ) = detector.getSignal(0);
-        (PactCollusionDetection.SignalType t1,,,,, ) = detector.getSignal(1);
-        (PactCollusionDetection.SignalType t2,,,,, ) = detector.getSignal(2);
+        (PactCollusionDetection.SignalType t0,,,,,) = detector.getSignal(0);
+        (PactCollusionDetection.SignalType t1,,,,,) = detector.getSignal(1);
+        (PactCollusionDetection.SignalType t2,,,,,) = detector.getSignal(2);
 
         assertEq(uint8(t0), uint8(PactCollusionDetection.SignalType.RepeatedPairing));
         assertEq(uint8(t1), uint8(PactCollusionDetection.SignalType.BidClustering));
@@ -273,7 +245,7 @@ contract PactCollusionDetectionTest is Test {
     // ── Actor Status Progression ──────────────────────────────────────
 
     function test_actorStatus_clean_initially() public view {
-        (uint256 totalSignals, uint256 aggConf, uint256 penalty, PactCollusionDetection.ActorStatus status, ) =
+        (uint256 totalSignals, uint256 aggConf, uint256 penalty, PactCollusionDetection.ActorStatus status,) =
             detector.actorProfiles(alice);
 
         assertEq(totalSignals, 0);
@@ -286,7 +258,7 @@ contract PactCollusionDetectionTest is Test {
         // Default flagThreshold = 3, minConfidence = 0.55e18
         _submitSignalsForActor(alice, 3, 0.6e18);
 
-        (, , , PactCollusionDetection.ActorStatus status, ) = detector.actorProfiles(alice);
+        (,,, PactCollusionDetection.ActorStatus status,) = detector.actorProfiles(alice);
         assertEq(uint8(status), uint8(PactCollusionDetection.ActorStatus.Flagged));
         assertTrue(detector.isActorFlagged(alice));
         assertTrue(detector.isActorAllowed(alice)); // flagged but not frozen
@@ -296,7 +268,7 @@ contract PactCollusionDetectionTest is Test {
         // Signals with confidence below threshold → stay clean
         _submitSignalsForActor(alice, 5, 0.3e18);
 
-        (, , , PactCollusionDetection.ActorStatus status, ) = detector.actorProfiles(alice);
+        (,,, PactCollusionDetection.ActorStatus status,) = detector.actorProfiles(alice);
         assertEq(uint8(status), uint8(PactCollusionDetection.ActorStatus.Clean));
         assertFalse(detector.isActorFlagged(alice));
     }
@@ -305,7 +277,7 @@ contract PactCollusionDetectionTest is Test {
         // Default penaltyThreshold = 5
         _submitSignalsForActor(alice, 5, 0.7e18);
 
-        (, , uint256 penalty, PactCollusionDetection.ActorStatus status, ) = detector.actorProfiles(alice);
+        (,, uint256 penalty, PactCollusionDetection.ActorStatus status,) = detector.actorProfiles(alice);
         assertEq(uint8(status), uint8(PactCollusionDetection.ActorStatus.Penalized));
         assertEq(penalty, 500e6); // basePenaltyAmount
         assertTrue(detector.isActorFlagged(alice));
@@ -316,7 +288,7 @@ contract PactCollusionDetectionTest is Test {
         // Default freezeThreshold = 10
         _submitSignalsForActor(alice, 10, 0.8e18);
 
-        (, , , PactCollusionDetection.ActorStatus status, ) = detector.actorProfiles(alice);
+        (,,, PactCollusionDetection.ActorStatus status,) = detector.actorProfiles(alice);
         assertEq(uint8(status), uint8(PactCollusionDetection.ActorStatus.Frozen));
         assertTrue(detector.isActorFlagged(alice));
         assertFalse(detector.isActorAllowed(alice)); // frozen = not allowed
@@ -326,22 +298,22 @@ contract PactCollusionDetectionTest is Test {
         // Submit signals one by one and verify progression
         // Signals 1-2: Clean
         _submitSignalsForActor(alice, 2, 0.7e18);
-        (, , , PactCollusionDetection.ActorStatus s1, ) = detector.actorProfiles(alice);
+        (,,, PactCollusionDetection.ActorStatus s1,) = detector.actorProfiles(alice);
         assertEq(uint8(s1), uint8(PactCollusionDetection.ActorStatus.Clean));
 
         // Signal 3: Flagged
         _submitSignalsForActor(alice, 1, 0.7e18);
-        (, , , PactCollusionDetection.ActorStatus s2, ) = detector.actorProfiles(alice);
+        (,,, PactCollusionDetection.ActorStatus s2,) = detector.actorProfiles(alice);
         assertEq(uint8(s2), uint8(PactCollusionDetection.ActorStatus.Flagged));
 
         // Signals 4-5: Penalized (at signal 5)
         _submitSignalsForActor(alice, 2, 0.7e18);
-        (, , , PactCollusionDetection.ActorStatus s3, ) = detector.actorProfiles(alice);
+        (,,, PactCollusionDetection.ActorStatus s3,) = detector.actorProfiles(alice);
         assertEq(uint8(s3), uint8(PactCollusionDetection.ActorStatus.Penalized));
 
         // Signals 6-10: Frozen (at signal 10)
         _submitSignalsForActor(alice, 5, 0.7e18);
-        (, , , PactCollusionDetection.ActorStatus s4, ) = detector.actorProfiles(alice);
+        (,,, PactCollusionDetection.ActorStatus s4,) = detector.actorProfiles(alice);
         assertEq(uint8(s4), uint8(PactCollusionDetection.ActorStatus.Frozen));
     }
 
@@ -397,13 +369,18 @@ contract PactCollusionDetectionTest is Test {
     function test_resetActorStatus() public {
         _submitSignalsForActor(alice, 5, 0.7e18);
 
-        (, , , PactCollusionDetection.ActorStatus statusBefore, ) = detector.actorProfiles(alice);
+        (,,, PactCollusionDetection.ActorStatus statusBefore,) = detector.actorProfiles(alice);
         assertEq(uint8(statusBefore), uint8(PactCollusionDetection.ActorStatus.Penalized));
 
         detector.resetActorStatus(alice);
 
-        (uint256 totalSignals, uint256 aggConf, uint256 penalty, PactCollusionDetection.ActorStatus statusAfter, uint64 lastFlagged) =
-            detector.actorProfiles(alice);
+        (
+            uint256 totalSignals,
+            uint256 aggConf,
+            uint256 penalty,
+            PactCollusionDetection.ActorStatus statusAfter,
+            uint64 lastFlagged
+        ) = detector.actorProfiles(alice);
 
         assertEq(uint8(statusAfter), uint8(PactCollusionDetection.ActorStatus.Clean));
         assertEq(totalSignals, 0);
@@ -449,7 +426,7 @@ contract PactCollusionDetectionTest is Test {
         vm.prank(monitor);
         detector.computeCollusionCost(100, 50);
 
-        (, , uint256 controlCostBps, uint256 expectedPenalty, ) = detector.getCostAnalysis();
+        (,, uint256 controlCostBps, uint256 expectedPenalty,) = detector.getCostAnalysis();
 
         // (50/100)^2 * 10000 = 0.25 * 10000 = 2500 bps (25%)
         assertEq(controlCostBps, 2500);
@@ -460,7 +437,7 @@ contract PactCollusionDetectionTest is Test {
         vm.prank(monitor);
         detector.computeCollusionCost(100, 100);
 
-        (, , uint256 controlCostBps, , ) = detector.getCostAnalysis();
+        (,, uint256 controlCostBps,,) = detector.getCostAnalysis();
 
         // (100/100)^2 * 10000 = 10000 bps (100%)
         assertEq(controlCostBps, 10_000);
@@ -470,7 +447,7 @@ contract PactCollusionDetectionTest is Test {
         vm.prank(monitor);
         detector.computeCollusionCost(1000, 1);
 
-        (, , uint256 controlCostBps, , ) = detector.getCostAnalysis();
+        (,, uint256 controlCostBps,,) = detector.getCostAnalysis();
 
         // (1/1000)^2 * 10000 ≈ 0 bps
         assertEq(controlCostBps, 0);
@@ -507,8 +484,8 @@ contract PactCollusionDetectionTest is Test {
         _submitSignalsForActor(alice, 5, 0.7e18);
         _submitSignalsForActor(bob, 1, 0.7e18);
 
-        (, , , PactCollusionDetection.ActorStatus aliceStatus, ) = detector.actorProfiles(alice);
-        (, , , PactCollusionDetection.ActorStatus bobStatus, ) = detector.actorProfiles(bob);
+        (,,, PactCollusionDetection.ActorStatus aliceStatus,) = detector.actorProfiles(alice);
+        (,,, PactCollusionDetection.ActorStatus bobStatus,) = detector.actorProfiles(bob);
 
         assertEq(uint8(aliceStatus), uint8(PactCollusionDetection.ActorStatus.Penalized));
         assertEq(uint8(bobStatus), uint8(PactCollusionDetection.ActorStatus.Clean));
@@ -551,7 +528,7 @@ contract PactCollusionDetectionTest is Test {
             keccak256("auction-max")
         );
 
-        (, , uint256 confidence, , , ) = detector.getSignal(0);
+        (,, uint256 confidence,,,) = detector.getSignal(0);
         assertEq(confidence, 1e18);
     }
 
@@ -561,13 +538,10 @@ contract PactCollusionDetectionTest is Test {
 
         vm.prank(monitor);
         detector.submitSignal(
-            PactCollusionDetection.SignalType.BidClustering,
-            participants,
-            0,
-            keccak256("auction-zero")
+            PactCollusionDetection.SignalType.BidClustering, participants, 0, keccak256("auction-zero")
         );
 
-        (, , uint256 confidence, , , ) = detector.getSignal(0);
+        (,, uint256 confidence,,,) = detector.getSignal(0);
         assertEq(confidence, 0);
     }
 
@@ -579,13 +553,10 @@ contract PactCollusionDetectionTest is Test {
 
         vm.prank(monitor);
         detector.submitSignal(
-            PactCollusionDetection.SignalType.TimingCorrelation,
-            participants,
-            0.5e18,
-            keccak256("auction-large")
+            PactCollusionDetection.SignalType.TimingCorrelation, participants, 0.5e18, keccak256("auction-large")
         );
 
-        (, address[] memory parts, , , , ) = detector.getSignal(0);
+        (, address[] memory parts,,,,) = detector.getSignal(0);
         assertEq(parts.length, 20);
     }
 
@@ -604,8 +575,8 @@ contract PactCollusionDetectionTest is Test {
 
         assertEq(detector.signalCount(), 2);
 
-        (, , , , , address reporter1) = detector.getSignal(0);
-        (, , , , , address reporter2) = detector.getSignal(1);
+        (,,,,, address reporter1) = detector.getSignal(0);
+        (,,,,, address reporter2) = detector.getSignal(1);
         assertEq(reporter1, monitor);
         assertEq(reporter2, monitor2);
     }
@@ -629,11 +600,11 @@ contract PactCollusionDetectionTest is Test {
         vm.startPrank(monitor);
 
         detector.computeCollusionCost(100, 10);
-        (, , uint256 cost1, , ) = detector.getCostAnalysis();
+        (,, uint256 cost1,,) = detector.getCostAnalysis();
         assertEq(cost1, 100);
 
         detector.computeCollusionCost(200, 50);
-        (uint256 ns2, uint256 c2, uint256 cost2, , ) = detector.getCostAnalysis();
+        (uint256 ns2, uint256 c2, uint256 cost2,,) = detector.getCostAnalysis();
         assertEq(ns2, 200);
         assertEq(c2, 50);
         // (50/200)^2 * 10000 = 0.0625 * 10000 = 625
@@ -652,13 +623,11 @@ contract PactCollusionDetectionTest is Test {
         vm.prank(monitor);
         vm.expectEmit(true, true, false, true);
         emit PactCollusionDetection.SignalSubmitted(
-            0,
-            PactCollusionDetection.SignalType.RepeatedPairing,
-            keccak256("auction-1"),
-            0.7e18,
-            2
+            0, PactCollusionDetection.SignalType.RepeatedPairing, keccak256("auction-1"), 0.7e18, 2
         );
-        detector.submitSignal(PactCollusionDetection.SignalType.RepeatedPairing, participants, 0.7e18, keccak256("auction-1"));
+        detector.submitSignal(
+            PactCollusionDetection.SignalType.RepeatedPairing, participants, 0.7e18, keccak256("auction-1")
+        );
     }
 
     function test_emits_ActorFlagged() public {
@@ -722,4 +691,5 @@ contract PactCollusionDetectionTest is Test {
             );
         }
         vm.stopPrank();
-    }}
+    }
+}
