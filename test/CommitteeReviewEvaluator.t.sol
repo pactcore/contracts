@@ -124,6 +124,44 @@ contract CommitteeReviewEvaluatorTest is Test {
         _assertValidatorAccount(validatorA, MINIMUM_STAKE - 1, 0, 0, 0, false);
     }
 
+    function testSelectedValidatorsCannotUnstakeBeforeVotingAndAreReleasedAfterAccounting() external {
+        uint256 jobId = _createAndFundJob(7 days);
+        bytes32 deliverable = keccak256("deliverable:reserved-selection");
+        bytes32 successAttestation = keccak256("attestation:reserved-selection-approved");
+        bytes32 failureAttestation = keccak256("attestation:reserved-selection-rejected");
+
+        vm.prank(provider);
+        commerce.submit(jobId, deliverable);
+
+        committeeEvaluator.configureJob(jobId, successAttestation, failureAttestation, 2, 2);
+
+        _assertValidatorAccount(validatorA, MINIMUM_STAKE, 0, 0, 1, true);
+        _assertValidatorAccount(validatorB, MINIMUM_STAKE, 0, 0, 1, true);
+        _assertValidatorAccount(validatorC, MINIMUM_STAKE, 0, 0, 1, true);
+
+        vm.prank(validatorA);
+        committeeEvaluator.castVote(jobId, CommitteeReviewEvaluator.VoteChoice.Approve);
+
+        vm.prank(validatorB);
+        committeeEvaluator.castVote(jobId, CommitteeReviewEvaluator.VoteChoice.Reject);
+
+        vm.expectRevert(abi.encodeWithSelector(CommitteeReviewEvaluator.PendingAccounting.selector, uint256(1)));
+        vm.prank(validatorC);
+        committeeEvaluator.unstake(1);
+
+        vm.warp(block.timestamp + REVIEW_DEADLINE + 1);
+        committeeEvaluator.finalizeDeadlockedJob(jobId);
+
+        vm.warp(block.timestamp + DISPUTE_WINDOW + 1);
+        committeeEvaluator.finalizeJobAccounting(jobId);
+
+        _assertValidatorAccount(validatorC, MINIMUM_STAKE, 0, 0, 0, true);
+
+        vm.prank(validatorC);
+        committeeEvaluator.unstake(1);
+        _assertValidatorAccount(validatorC, MINIMUM_STAKE - 1, 0, 0, 0, false);
+    }
+
     function testCommitteeRejectionsRefundClientAndDoNotMintRewards() external {
         uint256 jobId = _createAndFundJob(7 days);
         bytes32 deliverable = keccak256("deliverable:committee-rejection");
@@ -186,6 +224,11 @@ contract CommitteeReviewEvaluatorTest is Test {
         assertEq(usdc.balanceOf(treasury), treasuryBefore + treasuryFees + slashAmount);
 
         _assertValidatorAccount(validatorC, MINIMUM_STAKE - slashAmount, 0, 0, 0, false);
+        _assertValidatorPerformance(validatorA, 3, 3, 0, 0);
+        _assertValidatorPerformance(validatorB, 3, 3, 0, 0);
+        _assertValidatorPerformance(validatorC, 3, 0, 0, 0);
+        assertEq(committeeEvaluator.validatorReputation(validatorA), 100);
+        assertEq(committeeEvaluator.validatorReputation(validatorC), 57);
     }
 
     function testDisputeResolutionCanOverrideCommitteeAccountingAndRewards() external {
@@ -243,11 +286,69 @@ contract CommitteeReviewEvaluatorTest is Test {
         _assertValidatorAccount(validatorA, MINIMUM_STAKE, 0, 1, 0, true);
         _assertValidatorAccount(validatorB, MINIMUM_STAKE, 0, 1, 0, true);
         _assertValidatorAccount(validatorC, MINIMUM_STAKE, validatorReward, 0, 0, true);
+        _assertValidatorPerformance(validatorA, 1, 0, 1, 0);
+        _assertValidatorPerformance(validatorB, 1, 0, 1, 0);
+        _assertValidatorPerformance(validatorC, 1, 1, 1, 0);
+        assertEq(committeeEvaluator.validatorReputation(validatorA), 80);
+        assertEq(committeeEvaluator.validatorReputation(validatorB), 80);
+        assertEq(committeeEvaluator.validatorReputation(validatorC), 100);
 
         uint256 validatorCBalanceBefore = usdc.balanceOf(validatorC);
         vm.prank(validatorC);
         committeeEvaluator.claimRewards();
         assertEq(usdc.balanceOf(validatorC), validatorCBalanceBefore + validatorReward);
+    }
+
+    function testValidatorAppealScoreDefaultsToMaximumAndPenalizesOverturnedVotes() external {
+        assertEq(committeeEvaluator.validatorAppealScore(validatorA), 100);
+        assertEq(committeeEvaluator.validatorSelectionWeight(validatorA), 10_000);
+
+        uint256 jobId = _createAndFundJob(7 days);
+        bytes32 deliverable = keccak256("deliverable:appeal-score-override");
+        bytes32 successAttestation = keccak256("attestation:appeal-score-approved");
+        bytes32 failureAttestation = keccak256("attestation:appeal-score-rejected");
+
+        vm.prank(provider);
+        commerce.submit(jobId, deliverable);
+
+        committeeEvaluator.configureJob(jobId, successAttestation, failureAttestation, 2, 2);
+
+        vm.prank(validatorA);
+        committeeEvaluator.castVote(jobId, CommitteeReviewEvaluator.VoteChoice.Approve);
+
+        vm.prank(validatorC);
+        committeeEvaluator.castVote(jobId, CommitteeReviewEvaluator.VoteChoice.Reject);
+
+        vm.prank(validatorB);
+        committeeEvaluator.castVote(jobId, CommitteeReviewEvaluator.VoteChoice.Approve);
+
+        uint256 disputeBond = commerce.disputeBondAmount();
+
+        vm.prank(challenger);
+        uint256 disputeId = commerce.raiseDispute(
+            jobId,
+            keccak256("committee-decision"),
+            keccak256("committee://appeal-score-override"),
+            keccak256("evidence://appeal-score-override"),
+            disputeBond
+        );
+
+        commerce.resolveDispute(disputeId, true, IPactCommerce.Status.Rejected, failureAttestation);
+        committeeEvaluator.finalizeJobAccounting(jobId);
+
+        assertEq(committeeEvaluator.validatorResolvedAppeals(validatorA), 1);
+        assertEq(committeeEvaluator.validatorResolvedAppeals(validatorB), 1);
+        assertEq(committeeEvaluator.validatorResolvedAppeals(validatorC), 1);
+        assertEq(committeeEvaluator.validatorAlignedAppeals(validatorA), 0);
+        assertEq(committeeEvaluator.validatorAlignedAppeals(validatorB), 0);
+        assertEq(committeeEvaluator.validatorAlignedAppeals(validatorC), 1);
+
+        assertEq(committeeEvaluator.validatorAppealScore(validatorA), 75);
+        assertEq(committeeEvaluator.validatorAppealScore(validatorB), 75);
+        assertEq(committeeEvaluator.validatorAppealScore(validatorC), 100);
+        assertEq(committeeEvaluator.validatorSelectionWeight(validatorA), 6_000);
+        assertEq(committeeEvaluator.validatorSelectionWeight(validatorB), 6_000);
+        assertEq(committeeEvaluator.validatorSelectionWeight(validatorC), 10_000);
     }
 
     function testExpiredAppealOutcomeFinalizesAccountingWithoutValidatorRewards() external {
@@ -371,6 +472,17 @@ contract CommitteeReviewEvaluatorTest is Test {
         _assertValidatorAccount(validatorA, MINIMUM_STAKE, validatorReward / 2, 0, 0, true);
         _assertValidatorAccount(validatorB, MINIMUM_STAKE, validatorReward / 2, 0, 0, true);
         _assertValidatorAccount(validatorC, MINIMUM_STAKE, 0, 1, 0, true);
+        _assertValidatorPerformance(validatorA, 1, 1, 1, 1);
+        _assertValidatorPerformance(validatorB, 1, 1, 1, 1);
+        _assertValidatorPerformance(validatorC, 1, 0, 1, 1);
+        assertEq(committeeEvaluator.validatorResolvedAppeals(validatorA), 0);
+        assertEq(committeeEvaluator.validatorResolvedAppeals(validatorB), 0);
+        assertEq(committeeEvaluator.validatorResolvedAppeals(validatorC), 0);
+        assertEq(committeeEvaluator.validatorAppealScore(validatorA), 100);
+        assertEq(committeeEvaluator.validatorAppealScore(validatorB), 100);
+        assertEq(committeeEvaluator.validatorAppealScore(validatorC), 100);
+        assertEq(committeeEvaluator.validatorReputation(validatorA), 100);
+        assertEq(committeeEvaluator.validatorReputation(validatorC), 80);
     }
 
     function testCommitteeRejectsUnexpectedOptParamsHash() external {
@@ -767,13 +879,205 @@ contract CommitteeReviewEvaluatorTest is Test {
         candidates[2] = validatorC;
         candidates[3] = validatorD;
 
-        uint16[] memory reputations = new uint16[](4);
-        reputations[0] = 100;
-        reputations[1] = 80;
-        reputations[2] = 20;
-        reputations[3] = 5;
+        uint16[] memory selectionWeights = new uint16[](4);
+        selectionWeights[0] = 10_000;
+        selectionWeights[1] = 8_000;
+        selectionWeights[2] = 2_000;
+        selectionWeights[3] = 500;
 
-        address[] memory expectedCommittee = _expectedWeightedCommittee(candidates, reputations, selectionSeed, 2);
+        address[] memory expectedCommittee = _expectedWeightedCommittee(candidates, selectionWeights, selectionSeed, 2);
+        assertEq(committee[0], expectedCommittee[0]);
+        assertEq(committee[1], expectedCommittee[1]);
+    }
+
+    function testValidatorResponseScoreDefaultsToMaximumAndPenalizesNoShows() external {
+        assertEq(committeeEvaluator.validatorResponseScore(validatorA), 100);
+        assertEq(committeeEvaluator.validatorSelectionWeight(validatorA), 10_000);
+
+        uint256 jobId = _createAndFundJob(7 days);
+        bytes32 deliverable = keccak256("deliverable:no-show-response-score");
+        bytes32 successAttestation = keccak256("attestation:no-show-response-approved");
+        bytes32 failureAttestation = keccak256("attestation:no-show-response-rejected");
+
+        vm.prank(provider);
+        commerce.submit(jobId, deliverable);
+
+        committeeEvaluator.configureJob(jobId, successAttestation, failureAttestation, 2, 2);
+
+        vm.prank(validatorA);
+        committeeEvaluator.castVote(jobId, CommitteeReviewEvaluator.VoteChoice.Approve);
+
+        vm.prank(validatorB);
+        committeeEvaluator.castVote(jobId, CommitteeReviewEvaluator.VoteChoice.Approve);
+
+        vm.warp(block.timestamp + DISPUTE_WINDOW + 1);
+        committeeEvaluator.finalizeJobAccounting(jobId);
+
+        assertEq(committeeEvaluator.validatorAssignments(validatorA), 1);
+        assertEq(committeeEvaluator.validatorResponses(validatorA), 1);
+        assertEq(committeeEvaluator.validatorAssignments(validatorC), 1);
+        assertEq(committeeEvaluator.validatorResponses(validatorC), 0);
+
+        assertEq(committeeEvaluator.validatorResponseScore(validatorA), 100);
+        assertEq(committeeEvaluator.validatorResponseScore(validatorC), 75);
+        assertLt(
+            committeeEvaluator.validatorSelectionWeight(validatorC),
+            committeeEvaluator.validatorSelectionWeight(validatorA)
+        );
+    }
+
+    function testCommitteeSelectionSnapshotsFreezeDrawMetrics() external {
+        uint256 jobId = _createAndFundJob(7 days);
+
+        vm.prank(provider);
+        commerce.submit(jobId, keccak256("deliverable:selection-snapshot"));
+
+        committeeEvaluator.configureJob(
+            jobId,
+            keccak256("attestation:selection-snapshot-approved"),
+            keccak256("attestation:selection-snapshot-rejected"),
+            2,
+            1
+        );
+
+        address selectedValidator = committeeEvaluator.getCommittee(jobId)[0];
+
+        {
+            (
+                uint16 reputation,
+                uint16 responseScore,
+                uint16 appealScore,
+                uint256 weight,
+                uint256 stake,
+                uint256 requiredStake
+            ) = committeeEvaluator.getCommitteeSelectionSnapshot(jobId, selectedValidator);
+
+            assertEq(reputation, 100);
+            assertEq(responseScore, 75);
+            assertEq(appealScore, 100);
+            assertEq(weight, 7_500);
+            assertEq(stake, MINIMUM_STAKE);
+            assertEq(requiredStake, committeeEvaluator.minimumRequiredStakeForJob(jobId));
+        }
+
+        vm.prank(selectedValidator);
+        committeeEvaluator.castVote(jobId, CommitteeReviewEvaluator.VoteChoice.Approve);
+
+        assertEq(committeeEvaluator.validatorResponseScore(selectedValidator), 100);
+
+        {
+            (
+                ,
+                uint16 responseScoreAfterVote,,
+                uint256 weightAfterVote,
+                uint256 stakeAfterVote,
+                uint256 requiredStakeAfterVote
+            ) = committeeEvaluator.getCommitteeSelectionSnapshot(jobId, selectedValidator);
+
+            assertEq(responseScoreAfterVote, 75);
+            assertEq(weightAfterVote, 7_500);
+            assertEq(stakeAfterVote, MINIMUM_STAKE);
+            assertEq(requiredStakeAfterVote, committeeEvaluator.minimumRequiredStakeForJob(jobId));
+        }
+    }
+
+    function testWeightedCommitteeSelectionPenalizesRepeatedNoShows() external {
+        CommitteeReviewEvaluator responsiveEvaluator = new CommitteeReviewEvaluator(
+            address(commerce),
+            address(usdc),
+            MINIMUM_STAKE,
+            DISPUTE_WINDOW,
+            REVIEW_DEADLINE,
+            SLASHING_BPS,
+            SLASH_AFTER_DISAGREEMENTS,
+            treasury
+        );
+
+        usdc.mint(validatorD, VALIDATOR_BANKROLL);
+        _approveAndStake(address(responsiveEvaluator), validatorA, MINIMUM_STAKE);
+        _approveAndStake(address(responsiveEvaluator), validatorB, MINIMUM_STAKE);
+        _approveAndStake(address(responsiveEvaluator), validatorD, MINIMUM_STAKE);
+
+        for (uint256 i = 0; i < 3; ++i) {
+            vm.prank(client);
+            uint256 trainingJobId = commerce.createJob(
+                provider, address(responsiveEvaluator), block.timestamp + 7 days, "response-training committee job"
+            );
+
+            vm.prank(client);
+            commerce.setBudget(trainingJobId, BUDGET);
+
+            vm.prank(client);
+            commerce.fund(trainingJobId, BUDGET);
+
+            vm.prank(provider);
+            commerce.submit(trainingJobId, keccak256(abi.encodePacked("deliverable:response-training", i)));
+
+            responsiveEvaluator.configureJob(
+                trainingJobId,
+                keccak256(abi.encodePacked("attestation:response-training-approved", i)),
+                keccak256(abi.encodePacked("attestation:response-training-rejected", i)),
+                2,
+                2
+            );
+
+            vm.prank(validatorA);
+            responsiveEvaluator.castVote(trainingJobId, CommitteeReviewEvaluator.VoteChoice.Approve);
+
+            vm.prank(validatorB);
+            responsiveEvaluator.castVote(trainingJobId, CommitteeReviewEvaluator.VoteChoice.Approve);
+
+            vm.warp(block.timestamp + DISPUTE_WINDOW + 1);
+            responsiveEvaluator.finalizeJobAccounting(trainingJobId);
+        }
+
+        assertEq(responsiveEvaluator.validatorAssignments(validatorD), 3);
+        assertEq(responsiveEvaluator.validatorResponses(validatorD), 0);
+        assertEq(responsiveEvaluator.validatorResponseScore(validatorD), 50);
+
+        _approveAndStake(address(responsiveEvaluator), validatorC, MINIMUM_STAKE);
+
+        vm.prank(client);
+        uint256 jobId = commerce.createJob(
+            provider, address(responsiveEvaluator), block.timestamp + 7 days, "response-weighted committee job"
+        );
+
+        vm.prank(client);
+        commerce.setBudget(jobId, BUDGET);
+
+        vm.prank(client);
+        commerce.fund(jobId, BUDGET);
+
+        vm.prank(provider);
+        commerce.submit(jobId, keccak256("deliverable:response-weighted-committee"));
+
+        bytes32 successAttestation = keccak256("attestation:response-weighted-approved");
+        bytes32 failureAttestation = keccak256("attestation:response-weighted-rejected");
+
+        vm.prevrandao(keccak256("response-weighted-selection-seed"));
+
+        bytes32 selectionSeed = keccak256(
+            abi.encode(block.prevrandao, block.timestamp, jobId, successAttestation, failureAttestation, uint256(2))
+        );
+
+        responsiveEvaluator.configureJob(jobId, successAttestation, failureAttestation, 2, 1);
+
+        address[] memory committee = responsiveEvaluator.getCommittee(jobId);
+        assertEq(committee.length, 2);
+
+        address[] memory candidates = new address[](4);
+        candidates[0] = validatorA;
+        candidates[1] = validatorB;
+        candidates[2] = validatorD;
+        candidates[3] = validatorC;
+
+        uint16[] memory adjustedWeights = new uint16[](4);
+        adjustedWeights[0] = 10_000;
+        adjustedWeights[1] = 10_000;
+        adjustedWeights[2] = 5_000;
+        adjustedWeights[3] = 10_000;
+
+        address[] memory expectedCommittee = _expectedWeightedCommittee(candidates, adjustedWeights, selectionSeed, 2);
         assertEq(committee[0], expectedCommittee[0]);
         assertEq(committee[1], expectedCommittee[1]);
     }
@@ -792,6 +1096,33 @@ contract CommitteeReviewEvaluatorTest is Test {
 
         vm.expectRevert(abi.encodeWithSelector(CommitteeReviewEvaluator.InvalidReputation.selector, uint16(101)));
         committeeEvaluator.setValidatorReputation(validatorA, 101);
+    }
+
+    function testConfiguredValidatorReputationActsAsBaselineForDerivedScore() external {
+        committeeEvaluator.setValidatorReputation(validatorA, 40);
+        assertEq(committeeEvaluator.validatorReputation(validatorA), 40);
+
+        uint256 jobId = _createAndFundJob(7 days);
+        bytes32 deliverable = keccak256("deliverable:baseline-reputation");
+        bytes32 successAttestation = keccak256("attestation:baseline-reputation-approved");
+        bytes32 failureAttestation = keccak256("attestation:baseline-reputation-rejected");
+
+        vm.prank(provider);
+        commerce.submit(jobId, deliverable);
+
+        committeeEvaluator.configureJob(jobId, successAttestation, failureAttestation, 2, 2);
+
+        vm.prank(validatorA);
+        committeeEvaluator.castVote(jobId, CommitteeReviewEvaluator.VoteChoice.Approve);
+
+        vm.prank(validatorB);
+        committeeEvaluator.castVote(jobId, CommitteeReviewEvaluator.VoteChoice.Approve);
+
+        vm.warp(block.timestamp + DISPUTE_WINDOW + 1);
+        committeeEvaluator.finalizeJobAccounting(jobId);
+
+        _assertValidatorPerformance(validatorA, 1, 1, 0, 0);
+        assertEq(committeeEvaluator.validatorReputation(validatorA), 52);
     }
 
     function testCommitteeRejectsLateVotesAfterDeadline() external {
@@ -823,7 +1154,7 @@ contract CommitteeReviewEvaluatorTest is Test {
         IPactCommerce.Job memory job = commerce.getJob(jobId);
         assertEq(uint8(job.status), uint8(IPactCommerce.Status.Rejected));
         assertEq(job.attestation, failureAttestation);
-        _assertValidatorAccount(validatorB, MINIMUM_STAKE, 0, 0, 0, true);
+        _assertValidatorAccount(validatorB, MINIMUM_STAKE, 0, 0, 1, true);
     }
 
     function testSplitVoteDeadlockCanBeResolvedAfterDeadline() external {
@@ -975,6 +1306,21 @@ contract CommitteeReviewEvaluatorTest is Test {
         assertEq(deviationCount, expectedDeviations);
         assertEq(pendingAccountings, expectedPendingAccountings);
         assertEq(active, expectedActive);
+    }
+
+    function _assertValidatorPerformance(
+        address validator,
+        uint32 expectedResolvedVotes,
+        uint32 expectedAlignedVotes,
+        uint32 expectedDisputedVotes,
+        uint32 expectedNoContestVotes
+    ) internal view {
+        (uint32 resolvedVotes, uint32 alignedVotes, uint32 disputedVotes, uint32 noContestVotes) =
+            committeeEvaluator.validatorPerformances(validator);
+        assertEq(resolvedVotes, expectedResolvedVotes);
+        assertEq(alignedVotes, expectedAlignedVotes);
+        assertEq(disputedVotes, expectedDisputedVotes);
+        assertEq(noContestVotes, expectedNoContestVotes);
     }
 
     function _createAndFundJob(uint256 expiryOffset) internal returns (uint256 jobId) {

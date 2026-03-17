@@ -19,3 +19,5 @@ docs/
 
 # Legacy dependency managers
 /lib
+pact-contracts-gsd2-mainlane/
+CLAUDE.md

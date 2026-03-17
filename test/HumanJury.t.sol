@@ -28,6 +28,7 @@ contract HumanJuryTest is Test {
     address private jurorC = makeAddr("jurorC");
     address private jurorD = makeAddr("jurorD");
     address private jurorE = makeAddr("jurorE");
+    address private jurorF = makeAddr("jurorF");
     address private lowReputationJuror = makeAddr("lowReputationJuror");
 
     uint256 private constant INITIAL_BALANCE = 20_000e6;
@@ -447,6 +448,235 @@ contract HumanJuryTest is Test {
         assertEq(pendingPanelsA, 0);
     }
 
+    function testExpiredReviewTracksNoContestPerformanceForResponsiveJurors() external {
+        uint256 jobId = _createAndFundDirectReviewJob(7 days);
+        bytes32 deliverable = keccak256("deliverable:no-contest-performance");
+        bytes32 completionAttestation = keccak256("attestation:no-contest-performance");
+        bytes32 rejectedResolution = keccak256("rejected-resolution-no-contest-performance");
+
+        vm.prank(provider);
+        commerce.submit(jobId, deliverable);
+
+        vm.prank(evaluator);
+        commerce.complete(jobId, completionAttestation);
+
+        uint256 disputeBond = commerce.disputeBondAmount();
+        bytes32 evidenceHash = keccak256("evidence://no-contest-performance");
+
+        vm.prank(challenger);
+        uint256 disputeId = commerce.raiseDispute(
+            jobId,
+            keccak256("human-review"),
+            keccak256("completion://no-contest-performance"),
+            evidenceHash,
+            disputeBond
+        );
+
+        commerce.transferOwnership(address(humanJury));
+
+        humanJury.createReview(
+            disputeId, IPactCommerce.Status.Rejected, keccak256("unused-upheld-resolution"), rejectedResolution
+        );
+
+        address[] memory panel = humanJury.getPanel(disputeId);
+
+        vm.prank(panel[0]);
+        humanJury.castVote(disputeId, HumanJury.VoteChoice.Uphold);
+
+        vm.prank(panel[1]);
+        humanJury.castVote(disputeId, HumanJury.VoteChoice.Reject);
+
+        vm.warp(block.timestamp + REVIEW_DEADLINE_DURATION + 1);
+        humanJury.expireReview(disputeId);
+
+        assertEq(humanJury.jurorAssignments(panel[0]), 1);
+        assertEq(humanJury.jurorResponses(panel[0]), 1);
+        assertEq(humanJury.jurorResponseScore(panel[0]), 100);
+
+        (uint32 resolvedReviewsA, uint32 alignedReviewsA, uint32 expiredReviewsA) =
+            humanJury.jurorPerformances(panel[0]);
+        assertEq(resolvedReviewsA, 0);
+        assertEq(alignedReviewsA, 0);
+        assertEq(expiredReviewsA, 1);
+
+        assertEq(humanJury.jurorAssignments(panel[2]), 1);
+        assertEq(humanJury.jurorResponses(panel[2]), 0);
+        assertEq(humanJury.jurorResponseScore(panel[2]), 75);
+
+        (uint32 resolvedReviewsC, uint32 alignedReviewsC, uint32 expiredReviewsC) =
+            humanJury.jurorPerformances(panel[2]);
+        assertEq(resolvedReviewsC, 0);
+        assertEq(alignedReviewsC, 0);
+        assertEq(expiredReviewsC, 0);
+    }
+
+    function testJurorPerformanceFeedsWeightedPanelSelection() external {
+        _trainJurorPerformanceForWeightedSelection();
+
+        humanJury.configureJuror(jurorF, 84, true);
+
+        _assertWeightedPanelSelectionAfterPerformanceTraining();
+    }
+
+    function testPendingPanelLoadFeedsConcurrentWeightedSelection() external {
+        uint256 firstJobId = _createAndFundDirectReviewJob(7 days);
+        bytes32 firstDeliverable = keccak256("deliverable:pending-load-first");
+        bytes32 firstCompletionAttestation = keccak256("attestation:pending-load-first");
+        bytes32 firstEvidenceHash = keccak256("evidence://pending-load-first");
+        uint256 baselineJurorAWeight = humanJury.jurorSelectionWeight(jurorA);
+
+        vm.prank(provider);
+        commerce.submit(firstJobId, firstDeliverable);
+
+        vm.prank(evaluator);
+        commerce.complete(firstJobId, firstCompletionAttestation);
+
+        uint256 disputeBond = commerce.disputeBondAmount();
+
+        vm.prank(challenger);
+        uint256 firstDisputeId = commerce.raiseDispute(
+            firstJobId,
+            keccak256("human-review"),
+            keccak256("completion://pending-load-first"),
+            firstEvidenceHash,
+            disputeBond
+        );
+
+        commerce.transferOwnership(address(humanJury));
+
+        humanJury.createReview(
+            firstDisputeId,
+            IPactCommerce.Status.Rejected,
+            keccak256("unused-upheld-resolution"),
+            keccak256("rejected-resolution-pending-load-first")
+        );
+
+        assertEq(humanJury.jurorAssignments(jurorA), 1);
+        assertEq(humanJury.jurorResponses(jurorA), 0);
+        assertEq(humanJury.jurorResponseScore(jurorA), 75);
+        assertEq(humanJury.jurorLoadScore(jurorA), 50);
+        assertLt(humanJury.jurorSelectionWeight(jurorA), baselineJurorAWeight);
+
+        humanJury.configureJuror(jurorF, 84, true);
+
+        uint256 secondJobId = _createAndFundDirectReviewJob(7 days);
+        bytes32 secondEvidenceHash = keccak256("evidence://pending-load-second");
+
+        vm.prank(provider);
+        commerce.submit(secondJobId, keccak256("deliverable:pending-load-second"));
+
+        vm.prank(evaluator);
+        commerce.complete(secondJobId, keccak256("attestation:pending-load-second"));
+
+        vm.prank(challenger);
+        uint256 secondDisputeId = commerce.raiseDispute(
+            secondJobId,
+            keccak256("human-review"),
+            keccak256("completion://pending-load-second"),
+            secondEvidenceHash,
+            disputeBond
+        );
+
+        uint256 createTimestamp = block.timestamp;
+        address[] memory candidates = _eligibleJurorCandidatesWithJurorF();
+        bytes32 selectedRandao;
+        address[] memory expectedLoadAwarePanel;
+        address[] memory expectedPanelIgnoringLoad;
+        bool foundDifferingSeed;
+
+        for (uint256 i = 1; i <= 512; ++i) {
+            selectedRandao = bytes32(i);
+            vm.prevrandao(selectedRandao);
+            expectedLoadAwarePanel =
+                _expectedWeightedPanel(secondDisputeId, secondJobId, secondEvidenceHash, createTimestamp, candidates);
+            expectedPanelIgnoringLoad = _expectedPanelIgnoringPendingLoad(
+                secondDisputeId, secondJobId, secondEvidenceHash, createTimestamp, candidates
+            );
+
+            if (_panelsDiffer(expectedLoadAwarePanel, expectedPanelIgnoringLoad)) {
+                foundDifferingSeed = true;
+                break;
+            }
+        }
+
+        assertTrue(foundDifferingSeed);
+
+        vm.prevrandao(selectedRandao);
+        humanJury.createReview(
+            secondDisputeId,
+            IPactCommerce.Status.Rejected,
+            keccak256("unused-upheld-resolution"),
+            keccak256("rejected-resolution-pending-load-second")
+        );
+
+        address[] memory secondPanel = humanJury.getPanel(secondDisputeId);
+        _assertSamePanel(secondPanel, expectedLoadAwarePanel);
+        assertTrue(_panelsDiffer(secondPanel, expectedPanelIgnoringLoad));
+        assertTrue(_contains(secondPanel, jurorF));
+    }
+
+    function testJurySelectionSnapshotsFreezeDrawMetrics() external {
+        uint256 jobId = _createAndFundDirectReviewJob(7 days);
+        uint256 disputeBond = commerce.disputeBondAmount();
+
+        vm.prank(provider);
+        commerce.submit(jobId, keccak256("deliverable:jury-selection-snapshot"));
+
+        vm.prank(evaluator);
+        commerce.complete(jobId, keccak256("attestation:jury-selection-snapshot"));
+
+        vm.prank(challenger);
+        uint256 disputeId = commerce.raiseDispute(
+            jobId,
+            keccak256("human-review"),
+            keccak256("completion://jury-selection-snapshot"),
+            keccak256("evidence://jury-selection-snapshot"),
+            disputeBond
+        );
+
+        commerce.transferOwnership(address(humanJury));
+
+        humanJury.createReview(
+            disputeId,
+            IPactCommerce.Status.Rejected,
+            keccak256("unused-upheld-resolution"),
+            keccak256("rejected-resolution-jury-selection-snapshot")
+        );
+
+        address selectedJuror = humanJury.getPanel(disputeId)[0];
+        uint16 selectedJurorReputation = humanJury.jurorReputation(selectedJuror);
+
+        {
+            (uint16 reputation, uint16 responseScore, uint16 loadScore, uint256 weight, uint32 pendingPanels) =
+                humanJury.getSelectionSnapshot(disputeId, selectedJuror);
+
+            assertEq(reputation, selectedJurorReputation);
+            assertEq(responseScore, 100);
+            assertEq(loadScore, 100);
+            assertEq(weight, uint256(reputation) * 10_000);
+            assertEq(pendingPanels, 0);
+        }
+
+        assertEq(humanJury.jurorAssignments(selectedJuror), 1);
+        assertEq(humanJury.jurorResponseScore(selectedJuror), 75);
+        assertEq(humanJury.jurorLoadScore(selectedJuror), 50);
+
+        {
+            (
+                ,
+                uint16 responseScoreAfterSelection,
+                uint16 loadScoreAfterSelection,
+                uint256 weightAfterSelection,
+                uint32 pendingPanelsAfterSelection
+            ) = humanJury.getSelectionSnapshot(disputeId, selectedJuror);
+
+            assertEq(responseScoreAfterSelection, 100);
+            assertEq(loadScoreAfterSelection, 100);
+            assertEq(weightAfterSelection, uint256(selectedJurorReputation) * 10_000);
+            assertEq(pendingPanelsAfterSelection, 0);
+        }
+    }
+
     function testCannotExpireAlreadyResolvedReview() external {
         uint256 jobId = _createAndFundDirectReviewJob(7 days);
         bytes32 deliverable = keccak256("deliverable:resolved-then-expire");
@@ -535,6 +765,209 @@ contract HumanJuryTest is Test {
 
         vm.prank(client);
         commerce.fund(jobId, BUDGET);
+    }
+
+    function _trainJurorPerformanceForWeightedSelection() internal {
+        uint256 firstJobId = _createAndFundDirectReviewJob(7 days);
+
+        vm.prank(provider);
+        commerce.submit(firstJobId, keccak256("deliverable:weighted-jury-first"));
+
+        vm.prank(evaluator);
+        commerce.complete(firstJobId, keccak256("attestation:weighted-jury-first"));
+
+        uint256 disputeBond = commerce.disputeBondAmount();
+
+        vm.prank(challenger);
+        uint256 firstDisputeId = commerce.raiseDispute(
+            firstJobId,
+            keccak256("human-review"),
+            keccak256("completion://weighted-jury-first"),
+            keccak256("evidence://weighted-jury-first"),
+            disputeBond
+        );
+
+        commerce.transferOwnership(address(humanJury));
+
+        humanJury.createReview(
+            firstDisputeId,
+            IPactCommerce.Status.Rejected,
+            keccak256("unused-upheld-resolution"),
+            keccak256("rejected-resolution-weighted-jury-first")
+        );
+
+        address[] memory firstPanel = humanJury.getPanel(firstDisputeId);
+        assertEq(firstPanel.length, JURY_PANEL_SIZE);
+
+        vm.prank(firstPanel[0]);
+        humanJury.castVote(firstDisputeId, HumanJury.VoteChoice.Reject);
+
+        vm.prank(firstPanel[1]);
+        humanJury.castVote(firstDisputeId, HumanJury.VoteChoice.Reject);
+
+        vm.prank(firstPanel[2]);
+        humanJury.castVote(firstDisputeId, HumanJury.VoteChoice.Reject);
+
+        assertEq(humanJury.jurorAssignments(firstPanel[0]), 1);
+        assertEq(humanJury.jurorResponses(firstPanel[0]), 1);
+        assertEq(humanJury.jurorResponseScore(firstPanel[0]), 100);
+
+        (uint32 resolvedReviewsA, uint32 alignedReviewsA, uint32 expiredReviewsA) =
+            humanJury.jurorPerformances(firstPanel[0]);
+        assertEq(resolvedReviewsA, 1);
+        assertEq(alignedReviewsA, 1);
+        assertEq(expiredReviewsA, 0);
+
+        assertEq(humanJury.jurorAssignments(firstPanel[4]), 1);
+        assertEq(humanJury.jurorResponses(firstPanel[4]), 0);
+        assertEq(humanJury.jurorResponseScore(firstPanel[4]), 75);
+        assertGt(humanJury.jurorSelectionWeight(firstPanel[0]), humanJury.jurorSelectionWeight(firstPanel[4]));
+    }
+
+    function _assertWeightedPanelSelectionAfterPerformanceTraining() internal {
+        uint256 secondJobId = _createAndFundDirectReviewJob(7 days);
+        bytes32 secondEvidenceHash = keccak256("evidence://weighted-jury-second");
+
+        vm.prank(provider);
+        commerce.submit(secondJobId, keccak256("deliverable:weighted-jury-second"));
+
+        vm.prank(evaluator);
+        commerce.complete(secondJobId, keccak256("attestation:weighted-jury-second"));
+
+        uint256 disputeBond = commerce.disputeBondAmount();
+
+        vm.prank(challenger);
+        uint256 secondDisputeId = commerce.raiseDispute(
+            secondJobId,
+            keccak256("human-review"),
+            keccak256("completion://weighted-jury-second"),
+            secondEvidenceHash,
+            disputeBond
+        );
+
+        vm.prevrandao(bytes32(uint256(0xBEEF)));
+        uint256 createTimestamp = block.timestamp;
+        address[] memory expectedPanel = _expectedWeightedPanel(
+            secondDisputeId, secondJobId, secondEvidenceHash, createTimestamp, _eligibleJurorCandidatesWithJurorF()
+        );
+
+        humanJury.createReview(
+            secondDisputeId,
+            IPactCommerce.Status.Rejected,
+            keccak256("unused-upheld-resolution"),
+            keccak256("rejected-resolution-weighted-jury-second")
+        );
+
+        address[] memory secondPanel = humanJury.getPanel(secondDisputeId);
+        _assertSamePanel(secondPanel, expectedPanel);
+        assertFalse(_contains(secondPanel, lowReputationJuror));
+    }
+
+    function _eligibleJurorCandidatesWithJurorF() internal view returns (address[] memory candidates) {
+        candidates = new address[](6);
+        candidates[0] = jurorA;
+        candidates[1] = jurorB;
+        candidates[2] = jurorC;
+        candidates[3] = jurorD;
+        candidates[4] = jurorE;
+        candidates[5] = jurorF;
+    }
+
+    function _expectedWeightedPanel(
+        uint256 disputeId,
+        uint256 jobId,
+        bytes32 evidenceHash,
+        uint256 createTimestamp,
+        address[] memory candidates
+    ) internal view returns (address[] memory panel) {
+        panel = new address[](JURY_PANEL_SIZE);
+        bytes32 selectionSeed =
+            keccak256(abi.encode(block.prevrandao, createTimestamp, disputeId, jobId, evidenceHash, JURY_PANEL_SIZE));
+
+        for (uint256 i = 0; i < JURY_PANEL_SIZE; ++i) {
+            uint256 remainingWeight;
+            for (uint256 j = i; j < candidates.length; ++j) {
+                remainingWeight += humanJury.jurorSelectionWeight(candidates[j]);
+            }
+
+            uint256 targetWeight = uint256(keccak256(abi.encode(selectionSeed, i))) % remainingWeight;
+            uint256 cumulativeWeight;
+            uint256 selectedIndex = i;
+
+            for (uint256 j = i; j < candidates.length; ++j) {
+                cumulativeWeight += humanJury.jurorSelectionWeight(candidates[j]);
+                if (targetWeight < cumulativeWeight) {
+                    selectedIndex = j;
+                    break;
+                }
+            }
+
+            (candidates[i], candidates[selectedIndex]) = (candidates[selectedIndex], candidates[i]);
+            panel[i] = candidates[i];
+        }
+    }
+
+    function _expectedPanelIgnoringPendingLoad(
+        uint256 disputeId,
+        uint256 jobId,
+        bytes32 evidenceHash,
+        uint256 createTimestamp,
+        address[] memory candidates
+    ) internal view returns (address[] memory panel) {
+        panel = new address[](JURY_PANEL_SIZE);
+        bytes32 selectionSeed =
+            keccak256(abi.encode(block.prevrandao, createTimestamp, disputeId, jobId, evidenceHash, JURY_PANEL_SIZE));
+
+        for (uint256 i = 0; i < JURY_PANEL_SIZE; ++i) {
+            uint256 remainingWeight;
+            for (uint256 j = i; j < candidates.length; ++j) {
+                remainingWeight += _selectionWeightIgnoringPendingLoad(candidates[j]);
+            }
+
+            uint256 targetWeight = uint256(keccak256(abi.encode(selectionSeed, i))) % remainingWeight;
+            uint256 cumulativeWeight;
+            uint256 selectedIndex = i;
+
+            for (uint256 j = i; j < candidates.length; ++j) {
+                cumulativeWeight += _selectionWeightIgnoringPendingLoad(candidates[j]);
+                if (targetWeight < cumulativeWeight) {
+                    selectedIndex = j;
+                    break;
+                }
+            }
+
+            (candidates[i], candidates[selectedIndex]) = (candidates[selectedIndex], candidates[i]);
+            panel[i] = candidates[i];
+        }
+    }
+
+    function _selectionWeightIgnoringPendingLoad(address juror) internal view returns (uint256) {
+        uint256 reputationScore = humanJury.jurorReputation(juror);
+        if (reputationScore == 0) {
+            reputationScore = 1;
+        }
+        return reputationScore * uint256(humanJury.jurorResponseScore(juror));
+    }
+
+    function _assertSamePanel(address[] memory actual, address[] memory expected) internal pure {
+        assertEq(actual.length, expected.length);
+        for (uint256 i = 0; i < actual.length; ++i) {
+            assertEq(actual[i], expected[i]);
+        }
+    }
+
+    function _panelsDiffer(address[] memory lhs, address[] memory rhs) internal pure returns (bool) {
+        if (lhs.length != rhs.length) {
+            return true;
+        }
+
+        for (uint256 i = 0; i < lhs.length; ++i) {
+            if (lhs[i] != rhs[i]) {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     function _contains(address[] memory values, address target) internal pure returns (bool) {
