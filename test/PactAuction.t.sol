@@ -296,7 +296,7 @@ contract PactAuctionTest is Test {
         auction.resolveAuction(id);
 
         IPactAuction.Auction memory a = auction.getAuction(id);
-        assertEq(a.winner, bob);       // highest bidder
+        assertEq(a.winner, bob); // highest bidder
         assertEq(a.winningPrice, 400); // pays charlie's bid (second-highest)
     }
 

@@ -4,10 +4,10 @@ pragma solidity ^0.8.24;
 /// @title IPactAuction — Vickrey (sealed-bid second-price) auction for task pricing (§8.3)
 interface IPactAuction {
     enum AuctionStatus {
-        Bidding,   // accepting sealed bids
+        Bidding, // accepting sealed bids
         Revealing, // bid window closed, reveal window open
-        Resolved,  // winner determined
-        Cancelled  // cancelled by owner
+        Resolved, // winner determined
+        Cancelled // cancelled by owner
     }
 
     struct Auction {
@@ -26,12 +26,9 @@ interface IPactAuction {
     event AuctionResolved(uint256 indexed auctionId, address indexed winner, uint256 winningPrice);
     event AuctionCancelled(uint256 indexed auctionId);
 
-    function createAuction(
-        uint256 jobId,
-        uint64 bidDeadline,
-        uint64 revealDeadline,
-        uint256 minimumReputation
-    ) external returns (uint256 auctionId);
+    function createAuction(uint256 jobId, uint64 bidDeadline, uint64 revealDeadline, uint256 minimumReputation)
+        external
+        returns (uint256 auctionId);
 
     function commitBid(uint256 auctionId, bytes32 sealedBid) external;
 

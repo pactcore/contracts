@@ -48,12 +48,10 @@ contract PactAuction is IPactAuction, Ownable {
     }
 
     /// @inheritdoc IPactAuction
-    function createAuction(
-        uint256 jobId,
-        uint64 bidDeadline,
-        uint64 revealDeadline,
-        uint256 minimumReputation
-    ) external returns (uint256 auctionId) {
+    function createAuction(uint256 jobId, uint64 bidDeadline, uint64 revealDeadline, uint256 minimumReputation)
+        external
+        returns (uint256 auctionId)
+    {
         if (bidDeadline <= block.timestamp || revealDeadline <= bidDeadline) {
             revert InvalidDeadlines();
         }
