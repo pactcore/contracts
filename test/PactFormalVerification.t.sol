@@ -62,7 +62,9 @@ contract PactFormalVerificationTest is Test {
     }
 
     function test_registerCircuit_duplicate_reverts() public {
-        vm.expectRevert(abi.encodeWithSelector(PactFormalVerification.CircuitAlreadyRegistered.selector, locationCircuit));
+        vm.expectRevert(
+            abi.encodeWithSelector(PactFormalVerification.CircuitAlreadyRegistered.selector, locationCircuit)
+        );
         fv.registerCircuit("location", "1.0.0");
     }
 
@@ -169,10 +171,7 @@ contract PactFormalVerificationTest is Test {
         vm.prank(auditor1);
         vm.expectEmit(true, true, true, true);
         emit PactFormalVerification.FormalProofSubmitted(
-            locationCircuit,
-            PactFormalVerification.SecurityProperty.Soundness,
-            true,
-            auditor1
+            locationCircuit, PactFormalVerification.SecurityProperty.Soundness, true, auditor1
         );
         fv.submitProof(locationCircuit, PactFormalVerification.SecurityProperty.Soundness, true, "OK", assumptions);
     }
@@ -224,7 +223,13 @@ contract PactFormalVerificationTest is Test {
     function test_submitProof_notSatisfied() public {
         string[] memory assumptions = new string[](0);
         vm.prank(auditor1);
-        fv.submitProof(locationCircuit, PactFormalVerification.SecurityProperty.Soundness, false, "Failed soundness check", assumptions);
+        fv.submitProof(
+            locationCircuit,
+            PactFormalVerification.SecurityProperty.Soundness,
+            false,
+            "Failed soundness check",
+            assumptions
+        );
 
         assertFalse(fv.isPropertySatisfied(locationCircuit, PactFormalVerification.SecurityProperty.Soundness));
         assertEq(fv.getCircuitProofCount(locationCircuit), 1);
@@ -235,12 +240,24 @@ contract PactFormalVerificationTest is Test {
 
         // First: not satisfied
         vm.prank(auditor1);
-        fv.submitProof(locationCircuit, PactFormalVerification.SecurityProperty.Soundness, false, "Failed first attempt", assumptions);
+        fv.submitProof(
+            locationCircuit,
+            PactFormalVerification.SecurityProperty.Soundness,
+            false,
+            "Failed first attempt",
+            assumptions
+        );
         assertFalse(fv.isPropertySatisfied(locationCircuit, PactFormalVerification.SecurityProperty.Soundness));
 
         // Second: satisfied
         vm.prank(auditor2);
-        fv.submitProof(locationCircuit, PactFormalVerification.SecurityProperty.Soundness, true, "Passed second attempt", assumptions);
+        fv.submitProof(
+            locationCircuit,
+            PactFormalVerification.SecurityProperty.Soundness,
+            true,
+            "Passed second attempt",
+            assumptions
+        );
         assertTrue(fv.isPropertySatisfied(locationCircuit, PactFormalVerification.SecurityProperty.Soundness));
         assertEq(fv.getCircuitProofCount(locationCircuit), 2);
     }
@@ -249,10 +266,22 @@ contract PactFormalVerificationTest is Test {
         string[] memory assumptions = new string[](0);
 
         vm.prank(auditor1);
-        fv.submitProof(locationCircuit, PactFormalVerification.SecurityProperty.Soundness, true, "Auditor1 soundness OK", assumptions);
+        fv.submitProof(
+            locationCircuit,
+            PactFormalVerification.SecurityProperty.Soundness,
+            true,
+            "Auditor1 soundness OK",
+            assumptions
+        );
 
         vm.prank(auditor2);
-        fv.submitProof(locationCircuit, PactFormalVerification.SecurityProperty.Soundness, true, "Auditor2 soundness OK", assumptions);
+        fv.submitProof(
+            locationCircuit,
+            PactFormalVerification.SecurityProperty.Soundness,
+            true,
+            "Auditor2 soundness OK",
+            assumptions
+        );
 
         assertEq(fv.getCircuitProofCount(locationCircuit), 2);
         assertEq(fv.getAuditorReportCount(auditor1), 1);
@@ -314,7 +343,13 @@ contract PactFormalVerificationTest is Test {
         // Submit 5 proofs
         for (uint256 i = 0; i < 5; i++) {
             vm.prank(auditor1);
-            fv.submitProof(locationCircuit, PactFormalVerification.SecurityProperty.Soundness, true, string(abi.encodePacked("Proof ", vm.toString(i))), assumptions);
+            fv.submitProof(
+                locationCircuit,
+                PactFormalVerification.SecurityProperty.Soundness,
+                true,
+                string(abi.encodePacked("Proof ", vm.toString(i))),
+                assumptions
+            );
         }
 
         // Page 1 (offset 0, limit 3)
@@ -373,7 +408,9 @@ contract PactFormalVerificationTest is Test {
 
         vm.warp(1700000000);
         vm.prank(auditor1);
-        fv.submitProof(locationCircuit, PactFormalVerification.SecurityProperty.Soundness, true, "Detailed analysis", assumptions);
+        fv.submitProof(
+            locationCircuit, PactFormalVerification.SecurityProperty.Soundness, true, "Detailed analysis", assumptions
+        );
 
         PactFormalVerification.FormalProof[] memory proofs = fv.getCircuitProofs(locationCircuit, 0, 1);
         assertEq(proofs.length, 1);
@@ -399,7 +436,13 @@ contract PactFormalVerificationTest is Test {
 
         // Submit not-satisfied later — property stays satisfied (append-only)
         vm.prank(auditor2);
-        fv.submitProof(locationCircuit, PactFormalVerification.SecurityProperty.Soundness, false, "Different analysis - failed", assumptions);
+        fv.submitProof(
+            locationCircuit,
+            PactFormalVerification.SecurityProperty.Soundness,
+            false,
+            "Different analysis - failed",
+            assumptions
+        );
         assertTrue(fv.isPropertySatisfied(locationCircuit, PactFormalVerification.SecurityProperty.Soundness));
     }
 
@@ -410,14 +453,18 @@ contract PactFormalVerificationTest is Test {
         // Even after a failing proof for a property, fully verified stays true
         string[] memory assumptions = new string[](0);
         vm.prank(auditor2);
-        fv.submitProof(locationCircuit, PactFormalVerification.SecurityProperty.Soundness, false, "Contested", assumptions);
+        fv.submitProof(
+            locationCircuit, PactFormalVerification.SecurityProperty.Soundness, false, "Contested", assumptions
+        );
         assertTrue(fv.isFullyVerified(locationCircuit));
     }
 
     function test_emptyAssumptions() public {
         string[] memory assumptions = new string[](0);
         vm.prank(auditor1);
-        fv.submitProof(locationCircuit, PactFormalVerification.SecurityProperty.Soundness, true, "No assumptions", assumptions);
+        fv.submitProof(
+            locationCircuit, PactFormalVerification.SecurityProperty.Soundness, true, "No assumptions", assumptions
+        );
 
         PactFormalVerification.FormalProof[] memory proofs = fv.getCircuitProofs(locationCircuit, 0, 1);
         assertEq(proofs[0].assumptions.length, 0);
@@ -430,10 +477,20 @@ contract PactFormalVerificationTest is Test {
         assumptions[0] = "Standard assumption.";
 
         vm.prank(auditor);
-        fv.submitProof(circuitId, PactFormalVerification.SecurityProperty.Soundness, true, "Soundness verified.", assumptions);
+        fv.submitProof(
+            circuitId, PactFormalVerification.SecurityProperty.Soundness, true, "Soundness verified.", assumptions
+        );
         vm.prank(auditor);
-        fv.submitProof(circuitId, PactFormalVerification.SecurityProperty.Completeness, true, "Completeness verified.", assumptions);
+        fv.submitProof(
+            circuitId, PactFormalVerification.SecurityProperty.Completeness, true, "Completeness verified.", assumptions
+        );
         vm.prank(auditor);
-        fv.submitProof(circuitId, PactFormalVerification.SecurityProperty.ZeroKnowledge, true, "Zero-knowledge verified.", assumptions);
+        fv.submitProof(
+            circuitId,
+            PactFormalVerification.SecurityProperty.ZeroKnowledge,
+            true,
+            "Zero-knowledge verified.",
+            assumptions
+        );
     }
 }

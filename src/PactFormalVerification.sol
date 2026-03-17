@@ -62,10 +62,7 @@ contract PactFormalVerification is AccessControl {
     event CircuitRegistered(bytes32 indexed circuitId, string name, string version, address registeredBy);
     event CircuitDeactivated(bytes32 indexed circuitId);
     event FormalProofSubmitted(
-        bytes32 indexed circuitId,
-        SecurityProperty indexed property,
-        bool satisfied,
-        address indexed auditor
+        bytes32 indexed circuitId, SecurityProperty indexed property, bool satisfied, address indexed auditor
     );
     event CircuitFullyVerified(bytes32 indexed circuitId, uint64 verifiedAt);
 
@@ -254,7 +251,11 @@ contract PactFormalVerification is AccessControl {
     }
 
     /// @notice Get property satisfaction status for all 3 properties at once
-    function getPropertyStatus(bytes32 circuitId) external view returns (bool soundness, bool completeness, bool zeroKnowledge) {
+    function getPropertyStatus(bytes32 circuitId)
+        external
+        view
+        returns (bool soundness, bool completeness, bool zeroKnowledge)
+    {
         soundness = propertySatisfied[circuitId][SecurityProperty.Soundness];
         completeness = propertySatisfied[circuitId][SecurityProperty.Completeness];
         zeroKnowledge = propertySatisfied[circuitId][SecurityProperty.ZeroKnowledge];
